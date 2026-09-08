@@ -1,0 +1,36 @@
+# ROS 2 Build Artifacts
+build/
+install/
+log/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*~
+
+# Python cache
+__pycache__/
+*.pyc
+
+# OS and temp files
+.DS_Store
+Thumbs.db
+core
+*.log
+MvSdkLog/
+.docker_xauth
+
+# Calibration captured temp files
+calib_images/
+calib_annotated/
+
+# FAST-LIVO2 runtime output logs
+src/FAST-LIVO2/Log/*.txt
+src/FAST-LIVO2/Log/PCD/*.pcd
+
+# Large sensor bag files (>100MB limit on GitHub)
+bags/
+
+# Large PCD binary maps (optional: keep if under 100MB, ignore if massive)
+# scans/*.pcd

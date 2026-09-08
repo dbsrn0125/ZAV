@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>카메라 캘리브레이션 체커보드 (9x6 코너)</title>
+  <script src="https://www.gstatic.com/antigravity/web/dev/tailwindcss.min.js"></script>
+  <style>
+    body { 
+      margin: 0; 
+      padding: 0; 
+      background: #ffffff; 
+      overflow: hidden; 
+      display: flex; 
+      flex-direction: column; 
+      align-items: center; 
+      justify-content: center; 
+      height: 100vh; 
+      cursor: pointer;
+    }
+    .grid-container {
+      display: grid;
+      grid-template-columns: repeat(10, 1fr);
+      grid-template-rows: repeat(7, 1fr);
+      width: min(88vw, 88vh * (10 / 7));
+      height: min(88vh, 88vw * (7 / 10));
+      border: 32px solid #ffffff;
+      box-shadow: 0 0 30px rgba(0,0,0,0.15);
+      background: #ffffff;
+    }
+    .cell-black { background-color: #000000; }
+    .cell-white { background-color: #ffffff; }
+  </style>
+</head>
+<body onclick="toggleFullScreen()">
+  <!-- Top Banner -->
+  <div class="fixed top-3 z-50 bg-slate-900/95 text-white px-5 py-2.5 rounded-full text-sm shadow-2xl flex items-center gap-4 border border-slate-700">
+    <span class="font-bold text-amber-400">🏁 OpenCV 9×6 내부 코너 (10×7 체커보드)</span>
+    <span class="text-slate-300">화면 아무 곳이나 클릭하거나 <b>F11</b>을 누르면 전체화면이 됩니다</span>
+    <button onclick="event.stopPropagation(); toggleFullScreen();" class="bg-cyan-600 hover:bg-cyan-500 px-3 py-1 rounded text-white font-semibold text-xs shadow">
+      전체화면 On/Off
+    </button>
+  </div>
+
+  <!-- Checkerboard (10 cols x 7 rows = 9x6 inner corners) -->
+  <div id="board" class="grid-container"></div>
+
+  <script>
+    const board = document.getElementById('board');
+    for (let r = 0; r < 7; r++) {
+      for (let c = 0; c < 10; c++) {
+        const cell = document.createElement('div');
+        if ((r + c) % 2 === 1) {
+          cell.className = 'cell-black';
+        } else {
+          cell.className = 'cell-white';
+        }
+        board.appendChild(cell);
+      }
+    }
+
+    function toggleFullScreen() {
+      if (!document.fullscreenElement) {
+        document.documentElement.requestFullscreen().catch(() => {});
+      } else {
+        document.exitFullscreen().catch(() => {});
+      }
+    }
+  </script>
+</body>
+</html>
