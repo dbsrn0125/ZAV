@@ -78,7 +78,7 @@ Visualization Manager:
             Durability Policy: Volatile
             Filter size: 10
             History Policy: Keep Last
-            Reliability Policy: Reliable
+            Reliability Policy: Best Effort
             Value: /cloud_registered
           Use Fixed Frame: true
           Use rainbow: true
@@ -112,7 +112,7 @@ Visualization Manager:
             Durability Policy: Volatile
             Filter size: 10
             History Policy: Keep Last
-            Reliability Policy: Reliable
+            Reliability Policy: Best Effort
             Value: /cloud_registered
           Use Fixed Frame: true
           Use rainbow: true
@@ -130,7 +130,7 @@ Visualization Manager:
         Depth: 5
         Durability Policy: Volatile
         History Policy: Keep Last
-        Reliability Policy: Reliable
+        Reliability Policy: Best Effort
         Value: /rgb_img
       Value: true
     - Alpha: 1
@@ -158,7 +158,7 @@ Visualization Manager:
         Durability Policy: Volatile
         Filter size: 10
         History Policy: Keep Last
-        Reliability Policy: Reliable
+        Reliability Policy: Best Effort
         Value: /path
       Value: true
     - Angle Tolerance: 0.10000000149011612
@@ -197,7 +197,7 @@ Visualization Manager:
         Durability Policy: Volatile
         Filter size: 10
         History Policy: Keep Last
-        Reliability Policy: Reliable
+        Reliability Policy: Best Effort
         Value: /aft_mapped_to_init
       Value: true
   Enabled: true
