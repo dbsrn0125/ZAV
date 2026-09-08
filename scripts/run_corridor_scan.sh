@@ -29,7 +29,7 @@ case "${MODE}" in
         ;;
     2|--all|-a)
         BAG_MODE="all"
-        RECORD_TOPICS="/livox/lidar /livox/imu /camera/image_raw /cloud_registered /aft_mapped_to_init /path /Laser_map"
+        RECORD_TOPICS="/livox/lidar /livox/imu /camera/image_raw /cloud_registered /aft_mapped_to_init /path /Laser_map /tf /tf_static"
         ;;
     3|--no-bag|-n)
         BAG_MODE="none"
