@@ -22,7 +22,7 @@
       exposure_time_init: 0.0
 
     preprocess:
-      point_filter_num: 1
+      point_filter_num: 2
       filter_size_surf: 0.15
       lidar_type: 1 # Livox Avia / Mid-360 CustomMsg
       scan_line: 4
