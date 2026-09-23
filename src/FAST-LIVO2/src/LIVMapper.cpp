@@ -221,7 +221,7 @@ void LIVMapper::initializeSubscribersAndPublishers(rclcpp::Node::SharedPtr &nh, 
   rclcpp::QoS lidar_qos(20);
   lidar_qos.best_effort();
 
-  rclcpp::QoS imu_qos(1000);
+  rclcpp::QoS imu_qos(200);
   imu_qos.best_effort();
 
   rclcpp::QoS img_qos(5);
@@ -478,6 +478,11 @@ void LIVMapper::handleLIO()
   if (voxelmap_manager->config_setting_.map_sliding_en)
   {
     voxelmap_manager->mapSliding();
+    if (img_en && vio_manager != nullptr)
+    {
+      double half_meter = voxelmap_manager->config_setting_.half_map_size * voxelmap_manager->config_setting_.max_voxel_size_;
+      vio_manager->mapSliding(voxelmap_manager->position_last_, half_meter, voxelmap_manager->config_setting_.sliding_thresh);
+    }
   }
 
   PointCloudXYZI::Ptr laserCloudFullRes(dense_map_en ? feats_undistort : feats_down_body);
@@ -838,10 +843,46 @@ void LIVMapper::imu_cbk(const sensor_msgs::msg::Imu::ConstPtr &msg_in)
 
   if (last_timestamp_imu > 0.0 && timestamp < last_timestamp_imu)
   {
-    mtx_buffer.unlock();
-    sig_buffer.notify_all();
-    RCLCPP_ERROR(nh_->get_logger(), "imu loop back, offset: %lf \n", last_timestamp_imu - timestamp);
-    return;
+    double loopback_dt = last_timestamp_imu - timestamp;
+    if (loopback_dt < 0.005)
+    {
+      // Sub-millisecond jitter clamp to preserve continuous IMU propagation
+      timestamp = last_timestamp_imu + 0.0001;
+      msg->header.stamp = rclcpp::Time((int64_t)(timestamp * 1e9));
+    }
+    else
+    {
+      double wall_now = nh_->now().seconds();
+      if (imu_loopback_first_wall_time_ == 0.0)
+      {
+        imu_loopback_first_wall_time_ = wall_now;
+      }
+
+      double loopback_duration = wall_now - imu_loopback_first_wall_time_;
+      if (loopback_duration > 3.0)
+      {
+        // 3초 이상 루프백 지속 = Livox 재연결로 판단 → 기준 타임스탬프 리셋
+        RCLCPP_WARN(nh_->get_logger(),
+                    "[IMU Recovery] Loopback persisted %.1fs, resetting IMU timestamp base "
+                    "(%.6f -> %.6f). Sensor reconnect assumed.",
+                    loopback_duration, last_timestamp_imu, timestamp);
+        last_timestamp_imu = timestamp - 0.001;
+        imu_buffer.clear();
+        imu_loopback_first_wall_time_ = 0.0;
+        // 리셋 후 아래 정상 경로로 진행 (return 안 함)
+      }
+      else
+      {
+        RCLCPP_ERROR(nh_->get_logger(), "imu loop back, offset: %lf \n", last_timestamp_imu - timestamp);
+        mtx_buffer.unlock();
+        sig_buffer.notify_all();
+        return;
+      }
+    }
+  }
+  else
+  {
+    imu_loopback_first_wall_time_ = 0.0;  // 정상 수신 → 카운터 클리어
   }
 
   // if (last_timestamp_imu > 0.0 && timestamp > last_timestamp_imu + 0.2)

@@ -24,7 +24,8 @@ AutoExposureTimeLower: 500
 AutoExposureTimeUpper: 20000
 
 # Image & Gain Settings
-image_scale: 0.5   # 0.5 for downsampled 640x512 (75% memory reduction)
+Binning: 2          # 2x2 Hardware Binning on camera sensor (transmits native 640x512 over USB, 75% bandwidth reduction)
+image_scale: 1.0    # 1.0 (Hardware binning directly outputs 640x512, no software downsampling needed)
 GainAuto: 2        # 0 = Off, 1 = Once, 2 = Continuous
 Gain: 10.0         # min: 0, max: 17.0
 Gamma: 0.7

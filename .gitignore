@@ -32,5 +32,8 @@ src/FAST-LIVO2/Log/PCD/*.pcd
 # Large sensor bag files (>100MB limit on GitHub)
 bags/
 
-# Large PCD binary maps (optional: keep if under 100MB, ignore if massive)
-# scans/*.pcd
+# Large PCD binary maps
+scans/*.pcd
+
+# Runtime sensor status
+.sensor_status.json

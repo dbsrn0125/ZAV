@@ -6,7 +6,7 @@
       imu_topic: "/livox/imu"
       img_en: 1
       lidar_en: 1
-      ros_driver_bug_fix: true
+      ros_driver_bug_fix: false
 
     extrin_calib:
       extrinsic_T: [-0.011, -0.02329, -0.04412]
@@ -22,16 +22,16 @@
       exposure_time_init: 0.0
 
     preprocess:
-      point_filter_num: 2
-      filter_size_surf: 0.15
+      point_filter_num: 3
+      filter_size_surf: 0.1
       lidar_type: 1 # Livox Avia / Mid-360 CustomMsg
       scan_line: 4
-      blind: 0.2
+      blind: 0.5
 
     vio:
       max_iterations: 5
-      outlier_threshold: 150.0
-      img_point_cov: 100.0
+      outlier_threshold: 1000.0
+      img_point_cov: 1000.0
       patch_size: 8
       patch_pyrimid_level: 2
       normal_en: true
@@ -43,8 +43,8 @@
     imu:
       imu_en: true
       imu_int_frame: 100
-      acc_cov: 0.5
-      gyr_cov: 0.3
+      acc_cov: 0.2
+      gyr_cov: 0.1
       b_acc_cov: 0.0001
       b_gyr_cov: 0.0001
 
@@ -53,15 +53,15 @@
       dept_err: 0.02
       beam_err: 0.05
       min_eigen_value: 0.0025
-      voxel_size: 0.5
+      voxel_size: 0.8
       max_layer: 2
-      max_points_num: 50
+      max_points_num: 30
       layer_init_num: [5, 5, 5, 5, 5]
 
     local_map:  
       map_sliding_en: true
-      half_map_size: 50
-      sliding_thresh: 5
+      half_map_size: 300
+      sliding_thresh: 15.0
 
     uav:
       imu_rate_odom: false
@@ -81,5 +81,5 @@
     pcd_save:
       pcd_save_en: true
       colmap_output_en: false
-      filter_size_pcd: 0.02
+      filter_size_pcd: 0.05
       interval: -1

@@ -1,6 +1,7 @@
 #include "MvCameraControl.h"
 #include "cv_bridge/cv_bridge.h"
 #include "sensor_msgs/msg/image.hpp"
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <cstdlib>
@@ -15,6 +16,9 @@
 #include <sys/ipc.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <condition_variable>
+#include <deque>
+#include <mutex>
 #include <unistd.h>
 
 // 日志输出 port to ROS2
@@ -62,9 +66,15 @@ enum PixelFormat : unsigned int {
 
 // unsigned int g_nPayloadSize = 0;
 bool is_undistorted = true;
-bool exit_flag = false;
+std::atomic<bool> exit_flag(false);
+std::atomic<uint64_t> last_frame_time_ms(0);
+std::atomic<bool> has_received_first_frame(false);
 int width, height;
 rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr pub;
+std::mutex g_queue_mutex;
+std::condition_variable g_queue_cv;
+std::deque<sensor_msgs::msg::Image> g_image_queue;
+const size_t MAX_QUEUE_SIZE = 5;
 std::vector<PixelFormat> PIXEL_FORMAT = {RGB8, BayerRG8, BayerRG12Packed,
                                          BayerGB12Packed, BayerGB8};
 std::string ExposureAutoStr[3] = {"Off", "Once", "Continues"};
@@ -229,24 +239,48 @@ void setParams(void *handle, const std::string &params_file) {
   } else {
     MV_CC_SetBoolValue(handle, "AcquisitionFrameRateEnable", false);
   }
+
+  // Hardware Binning configuration (2x2 Hardware Binning delivers native 640x512 over USB)
+  int binning = 2; // Default to 2x2 for MV-CU013 (75% USB traffic reduction)
+  if (!Params["Binning"].empty()) {
+    binning = Params["Binning"];
+  } else if (image_scale >= 0.99f) {
+    binning = 1;
+  }
+
+  if (binning > 1) {
+    nRet = MV_CC_SetEnumValue(handle, "BinningHorizontal", binning);
+    int nRetV = MV_CC_SetEnumValue(handle, "BinningVertical", binning);
+    if (MV_OK == nRet && MV_OK == nRetV) {
+      ROS_INFO("Set Hardware Binning to %dx%d (Native 640x512 over USB, 75%% bandwidth reduction)", binning, binning);
+    } else {
+      ROS_WARN("Failed to set Hardware Binning %dx%d (ret: 0x%x, 0x%x)", binning, binning, nRet, nRetV);
+    }
+  } else {
+    MV_CC_SetEnumValue(handle, "BinningHorizontal", 1);
+    MV_CC_SetEnumValue(handle, "BinningVertical", 1);
+    ROS_INFO("Hardware Binning disabled (Native full resolution)");
+  }
 }
 
 void SignalHandler(int signal) {
-  if (signal == SIGINT) { // 捕捉 Ctrl + C 触发的 SIGINT 信号
-    fprintf(stderr, "\nReceived Ctrl+C, exiting...\n");
-    exit_flag = true; // 设置退出标志
+  if (signal == SIGINT || signal == SIGTERM) {
+    fprintf(stderr, "\nReceived shutdown signal (%d), exiting...\n", signal);
+    exit_flag.store(true);
+    g_queue_cv.notify_all();
   }
 }
 
 void SetupSignalHandler() {
   struct sigaction sigIntHandler;
-  sigIntHandler.sa_handler = SignalHandler; // 设置处理函数
-  sigemptyset(&sigIntHandler.sa_mask);      // 清空信号屏蔽集
+  sigIntHandler.sa_handler = SignalHandler;
+  sigemptyset(&sigIntHandler.sa_mask);
   sigIntHandler.sa_flags = 0;
   sigaction(SIGINT, &sigIntHandler, NULL);
+  sigaction(SIGTERM, &sigIntHandler, NULL);
 }
 
-static void *WorkThread(void *pUser) {
+static void *GrabThread(void *pUser) {
   int nRet = MV_OK;
 
   std::vector<unsigned char> rgb_buffer;
@@ -260,56 +294,31 @@ static void *WorkThread(void *pUser) {
   }
   ROS_INFO("Get PayloadSize success! val [%d]", stParam.nCurValue);
 
-  // MV_FRAME_OUT_INFO_EX stImageInfo = {0};
   MV_CC_PIXEL_CONVERT_PARAM stConvertParam = {0};
   MV_FRAME_OUT stImageInfo = {0};
-  MV_CC_IMAGE stImage = {0};
 
-  // memset(&stImageInfo, 0, sizeof(MV_FRAME_OUT));
-  // MV_CC_PIXEL_CONVERT_PARAM stConvertParam = {0};
+  int consecutive_timeouts = 0;
+  ROS_INFO("GrabThread: Capture loop started.");
+  while (!exit_flag.load() && rclcpp::ok()) {
 
-  // unsigned char *pData =
-  //     (unsigned char *)malloc(sizeof(unsigned char) * stParam.nCurValue * 3);
-  // unsigned char *pDataForBGR =
-  //     (unsigned char *)malloc(sizeof(unsigned char) * stParam.nCurValue * 3);
-
-  // if (pData == nullptr || pDataForBGR == nullptr) {
-  //   ROS_ERROR("Memory allocation failed!");
-  //   if (pData)
-  //     free(pData);
-  //   if (pDataForBGR)
-  //     free(pDataForBGR);
-  //   return nullptr;
-  // }
-
-  ROS_INFO("Capture loop start.");
-  while (!exit_flag && rclcpp::ok()) {
-
-    // nRet = MV_CC_GetOneFrameTimeout(pUser, pData, stParam.nCurValue * 3,
-    //                                 &stImageInfo, 1000);
-
-    nRet = MV_CC_GetImageBuffer(pUser, &stImageInfo, 10000);
+    nRet = MV_CC_GetImageBuffer(pUser, &stImageInfo, 1000);
 
     if (nRet == MV_OK) {
+      consecutive_timeouts = 0;
+      last_frame_time_ms.store(
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::steady_clock::now().time_since_epoch())
+              .count());
+      has_received_first_frame.store(true);
 
       rclcpp::Time rcv_time;
       if (trigger_enable && pointt != nullptr && pointt != MAP_FAILED && pointt->low != 0) {
-        // 触发模式
-        // 赋值共享内存中的时间戳给相机帧
         int64_t b = pointt->low;
         double time_pc = b / 1000000000.0;
-        rcv_time =
-            rclcpp::Time(static_cast<int64_t>(time_pc * 1e9)); // 转换为纳秒
+        rcv_time = rclcpp::Time(static_cast<int64_t>(time_pc * 1e9));
       } else {
-        // 自动模式 使用 ROS 系统时钟
         rcv_time = rclcpp::Clock(RCL_SYSTEM_TIME).now();
       }
-
-      std::string debug_msg;
-      debug_msg = "GetOneFrame,nFrameNum[" +
-                  std::to_string(stImageInfo.stFrameInfo.nFrameNum) +
-                  "], FrameTime:" + std::to_string(rcv_time.seconds());
-      ROS_DEBUG(debug_msg.c_str());
 
       size_t needed_size = (size_t)stImageInfo.stFrameInfo.nExtendWidth *
                            stImageInfo.stFrameInfo.nExtendHeight * 4 + 2048;
@@ -329,50 +338,27 @@ static void *WorkThread(void *pUser) {
 
       nRet = MV_CC_ConvertPixelType(pUser, &stConvertParam);
 
-      // stConvertParam.nWidth = stImageInfo.stFrameInfo.nWidth;
-      // stConvertParam.nHeight = stImageInfo.stFrameInfo.nHeight;
-      // stConvertParam.pSrcData = pData;
-      // stConvertParam.nSrcDataLen = stImageInfo.stFrameInfo.nFrameLen;
-      // stConvertParam.enSrcPixelType = stImageInfo.stFrameInfo.enPixelType;
-      // stConvertParam.enDstPixelType = PixelType_Gvsp_RGB8_Packed;
-      // stConvertParam.pDstBuffer = pDataForBGR;
-      // stConvertParam.nDstBufferSize = stImageInfo.stFrameInfo.nFrameLen;
-      // nRet = MV_CC_ConvertPixelType(pUser, &stConvertParam);
       if (MV_OK != nRet) {
-        ROS_WARN(
-            "MV_CC_ConvertPixelType failed! nRet [%x], skipping this frame",
-            nRet);
+        ROS_WARN("MV_CC_ConvertPixelType failed! nRet [%x], skipping frame", nRet);
+        MV_CC_FreeImageBuffer(pUser, &stImageInfo);
         continue;
       }
-      cv::Mat srcImage;
-      srcImage = cv::Mat(stImageInfo.stFrameInfo.nHeight,
-      stImageInfo.stFrameInfo.nWidth, CV_8UC3,
-                         pDataForRGB);
 
-      // // cv::Mat srcImage;
-      // // srcImage = cv::Mat(stImageInfo.nHeight, stImageInfo.nWidth, CV_8UC3,
-      // // pData);
-      ROS_INFO("GetOneFrame, Width[%d], Height[%d], nFrameNum[%d]",
-               stImageInfo.stFrameInfo.nExtendWidth,
-               stImageInfo.stFrameInfo.nExtendHeight,
-               stImageInfo.stFrameInfo.nFrameNum);
+      int frame_w = stImageInfo.stFrameInfo.nWidth;
+      int frame_h = stImageInfo.stFrameInfo.nHeight;
+      int frame_num = stImageInfo.stFrameInfo.nFrameNum;
+
+      // Free hardware SDK buffer IMMEDIATELY after convert!
       MV_CC_FreeImageBuffer(pUser, &stImageInfo);
-      // usleep(100000);
 
-      stImage.nWidth = stImageInfo.stFrameInfo.nExtendWidth;
-      stImage.nHeight = stImageInfo.stFrameInfo.nExtendHeight;
-      stImage.enPixelType = stImageInfo.stFrameInfo.enPixelType;
-      stImage.pImageBuf = stImageInfo.pBufAddr;
-      stImage.nImageLen = stImageInfo.stFrameInfo.nFrameLenEx;
+      cv::Mat srcImage(frame_h, frame_w, CV_8UC3, pDataForRGB);
 
-      if (image_scale > 0.0) {
-        cv::resize(
-            srcImage, srcImage,
-            cv::Size(srcImage.cols * image_scale, srcImage.rows *
-            image_scale), cv::INTER_LINEAR);
-      } else {
-        ROS_WARN("Invalid image_scale: %f. Skipping resize.", image_scale);
+      if (image_scale > 0.0 && image_scale < 0.99f && (srcImage.cols > 640 || srcImage.rows > 512)) {
+        cv::resize(srcImage, srcImage,
+                   cv::Size(srcImage.cols * image_scale, srcImage.rows * image_scale),
+                   cv::INTER_LINEAR);
       }
+
       sensor_msgs::msg::Image msg;
       msg.header.stamp = rcv_time;
       msg.height = srcImage.rows;
@@ -381,27 +367,77 @@ static void *WorkThread(void *pUser) {
       msg.is_bigendian = false;
       msg.step = srcImage.step;
       msg.data.assign(srcImage.data,
-                      srcImage.data + srcImage.total() *
-                      srcImage.elemSize());
-      // msg.header.stamp = rclcpp::Clock().now();
+                      srcImage.data + srcImage.total() * srcImage.elemSize());
 
-      pub->publish(msg);
+      // Push into decoupled publish queue (never blocks GrabThread!)
+      {
+        std::lock_guard<std::mutex> lock(g_queue_mutex);
+        if (g_image_queue.size() >= MAX_QUEUE_SIZE) {
+          g_image_queue.pop_front();
+        }
+        g_image_queue.push_back(std::move(msg));
+      }
+      g_queue_cv.notify_one();
+
+      ROS_DEBUG("GrabThread: frame #%d queued", frame_num);
     } else {
-      ROS_WARN("Capture timeout, retrying...");
+      consecutive_timeouts++;
+      ROS_WARN("Capture timeout (%d consecutive timeouts, nRet [0x%x]), retrying...",
+               consecutive_timeouts, nRet);
+      if (consecutive_timeouts == 3) {
+        ROS_WARN("Camera stream appears stalled (3s). Resetting grab stream...");
+        MV_CC_StopGrabbing(pUser);
+        usleep(100000);
+        int resetRet = MV_CC_StartGrabbing(pUser);
+        if (resetRet == MV_OK) {
+          ROS_INFO("Camera grab stream restarted successfully.");
+          consecutive_timeouts = 0;
+        } else {
+          ROS_ERROR("Failed to restart camera grab stream! nRet [0x%x]", resetRet);
+        }
+      } else if (consecutive_timeouts >= 6) {
+        ROS_ERROR("Camera stream dead for %d consecutive seconds. Exiting node...",
+                  consecutive_timeouts);
+        exit_flag.store(true);
+        g_queue_cv.notify_all();
+        break;
+      }
     }
   }
 
-  // if (pData) {
-  //   free(pData);
-  //   pData = nullptr;
-  // }
+  g_queue_cv.notify_all();
+  ROS_INFO("GrabThread exited cleanly.");
+  return NULL;
+}
 
-  // if (pDataForBGR) {
-  //   free(pDataForBGR);
-  //   pDataForBGR = nullptr;
-  // }
+static void *PublishThread(void *pUser) {
+  (void)pUser;
+  ROS_INFO("PublishThread: started.");
+  while (!exit_flag.load() && rclcpp::ok()) {
+    sensor_msgs::msg::Image msg;
+    {
+      std::unique_lock<std::mutex> lock(g_queue_mutex);
+      g_queue_cv.wait_for(lock, std::chrono::milliseconds(100), [] {
+        return !g_image_queue.empty() || exit_flag.load();
+      });
 
-  return 0;
+      if (exit_flag.load() || !rclcpp::ok()) {
+        break;
+      }
+      if (g_image_queue.empty()) {
+        continue;
+      }
+
+      msg = std::move(g_image_queue.front());
+      g_image_queue.pop_front();
+    }
+
+    if (pub) {
+      pub->publish(std::move(msg));
+    }
+  }
+  ROS_INFO("PublishThread exited cleanly.");
+  return NULL;
 }
 
 int main(int argc, char **argv) {
@@ -442,7 +478,9 @@ int main(int argc, char **argv) {
   int PixelFormat = Params["PixelFormat"];
 
   auto node = rclcpp::Node::make_shared("mvs_trigger");
-  pub = node->create_publisher<sensor_msgs::msg::Image>(pub_topic, 10);
+  rclcpp::QoS cam_pub_qos(10);
+  cam_pub_qos.reliable();
+  pub = node->create_publisher<sensor_msgs::msg::Image>(pub_topic, cam_pub_qos);
 
   if (trigger_enable) {
     const char *home_dir = std::getenv("HOME");
@@ -546,10 +584,20 @@ int main(int argc, char **argv) {
     return -1;
   }
 
-  // open device
-  nRet = MV_CC_OpenDevice(handle);
+  // open device with retries (in case USB is settling from previous session)
+  int open_retries = 0;
+  while (open_retries < 5) {
+    nRet = MV_CC_OpenDevice(handle);
+    if (MV_OK == nRet) {
+      break;
+    }
+    open_retries++;
+    ROS_WARN("MV_CC_OpenDevice attempt %d failed (nRet [0x%x]), retrying in 500ms...", open_retries, nRet);
+    usleep(500000);
+  }
   if (MV_OK != nRet) {
-    ROS_ERROR("MV_CC_OpenDevice fail! nRet [%x]", nRet);
+    ROS_ERROR("MV_CC_OpenDevice failed after retries! nRet [%x]", nRet);
+    MV_CC_DestroyHandle(handle);
     return -1;
   }
 
@@ -591,6 +639,22 @@ int main(int argc, char **argv) {
     return -1;
   }
 
+  // Set Grab Strategy to OneByOne for sequential, lossless frame capture
+  nRet = MV_CC_SetGrabStrategy(handle, MV_GrabStrategy_OneByOne);
+  if (MV_OK != nRet) {
+    ROS_WARN("MV_CC_SetGrabStrategy fail! nRet [0x%x]", nRet);
+  } else {
+    ROS_INFO("Set GrabStrategy to MV_GrabStrategy_OneByOne success.");
+  }
+
+  // Set SDK internal image buffer nodes to 20 for ample buffering headroom
+  nRet = MV_CC_SetImageNodeNum(handle, 20);
+  if (MV_OK != nRet) {
+    ROS_WARN("MV_CC_SetImageNodeNum fail! nRet [0x%x]", nRet);
+  } else {
+    ROS_INFO("Set ImageNodeNum to 20 success.");
+  }
+
   ROS_INFO("Finish all params set! Start grabbing...");
   nRet = MV_CC_StartGrabbing(handle);
   if (MV_OK != nRet) {
@@ -599,47 +663,87 @@ int main(int argc, char **argv) {
   }
   ROS_INFO("Start Grabbing Success.");
 
-  pthread_t nThreadID;
-  nRet = pthread_create(&nThreadID, NULL, WorkThread, handle);
+  pthread_t nGrabThreadID;
+  nRet = pthread_create(&nGrabThreadID, NULL, GrabThread, handle);
   if (nRet != 0) {
-    ROS_ERROR("thread create failed.ret = %d", nRet);
+    ROS_ERROR("GrabThread create failed. ret = %d", nRet);
     return -1;
   }
-  ROS_INFO("Start Grabbing thread Success, pid %ld", nThreadID);
+  ROS_INFO("Start GrabThread Success, pid %ld", nGrabThreadID);
 
-  while (!exit_flag && rclcpp::ok()) {
+  pthread_t nPubThreadID;
+  nRet = pthread_create(&nPubThreadID, NULL, PublishThread, NULL);
+  if (nRet != 0) {
+    ROS_ERROR("PublishThread create failed. ret = %d", nRet);
+    return -1;
+  }
+  ROS_INFO("Start PublishThread Success, pid %ld", nPubThreadID);
+
+  while (!exit_flag.load() && rclcpp::ok()) {
     rclcpp::spin_some(node);
     usleep(100000);
+
+    // Watchdog check: if frames were flowing but stopped for > 10s
+    if (has_received_first_frame.load()) {
+      uint64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now().time_since_epoch()).count();
+      if (now_ms > last_frame_time_ms.load() + 10000) {
+        ROS_ERROR("Watchdog: Camera stream frozen for >10 seconds! Initiating clean device release for ROS 2 auto-respawn...");
+        exit_flag.store(true);
+        g_queue_cv.notify_all();
+        break;
+      }
+    }
   }
 
-  if (nThreadID) {
-    pthread_join(nThreadID, NULL);
-    ROS_INFO("Worker thread joined.");
+  exit_flag.store(true);
+  g_queue_cv.notify_all();
+
+  if (nGrabThreadID) {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += 2;
+    pthread_timedjoin_np(nGrabThreadID, NULL, &ts);
+    ROS_INFO("GrabThread joined.");
+  }
+
+  if (nPubThreadID) {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += 2;
+    pthread_timedjoin_np(nPubThreadID, NULL, &ts);
+    ROS_INFO("PublishThread joined.");
   }
 
   nRet = MV_CC_StopGrabbing(handle);
   if (MV_OK != nRet) {
-    ROS_ERROR("MV_CC_StopGrabbing fail! nRet [%x]", nRet);
-    return -1;
+    ROS_WARN("MV_CC_StopGrabbing result: [0x%x]", nRet);
+  } else {
+    ROS_INFO("MV_CC_StopGrabbing success!");
   }
-  ROS_INFO("MV_CC_StopGrabbing success!");
 
   nRet = MV_CC_CloseDevice(handle);
   if (MV_OK != nRet) {
-    ROS_ERROR("MV_CC_CloseDevice fail! nRet [%x]", nRet);
-    return -1;
+    ROS_WARN("MV_CC_CloseDevice result: [0x%x]", nRet);
+  } else {
+    ROS_INFO("MV_CC_CloseDevice success!");
   }
-  ROS_INFO("MV_CC_CloseDevice success!");
 
   nRet = MV_CC_DestroyHandle(handle);
   if (MV_OK != nRet) {
-    ROS_ERROR("MV_CC_DestroyHandle fail! nRet [%x]", nRet);
-    return -1;
+    ROS_WARN("MV_CC_DestroyHandle result: [0x%x]", nRet);
+  } else {
+    ROS_INFO("MV_CC_DestroyHandle success!");
   }
-  ROS_INFO("MV_CC_DestroyHandle success!");
 
   if (pointt != nullptr && pointt != MAP_FAILED) {
     munmap(pointt, sizeof(time_stamp));
+  }
+
+  if (rclcpp::ok()) {
+    ROS_WARN("mvs_camera_node exited unexpectedly. Terminating for respawn.");
+    rclcpp::shutdown();
+    return 1;
   }
 
   return 0;

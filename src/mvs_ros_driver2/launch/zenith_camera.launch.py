@@ -23,7 +23,7 @@ def generate_launch_description():
         name='mvs_camera',
         arguments=[config_file, '--ros-args', '--log-level', 'info'],
         respawn=True,
-        respawn_delay=2.0,
+        respawn_delay=1.0,
         output='screen'
     )
 

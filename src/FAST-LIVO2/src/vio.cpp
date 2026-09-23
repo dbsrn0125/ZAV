@@ -249,6 +249,50 @@ void VIOManager::insertPointIntoVoxelMap(VisualPoint *pt_new)
   }
 }
 
+void VIOManager::mapSliding(const V3D &curr_pos, double half_map_size_meter, double sliding_thresh_meter)
+{
+  static V3D last_slide_pos(0, 0, 0);
+  static bool first_slide = true;
+  if (first_slide) {
+    last_slide_pos = curr_pos;
+    first_slide = false;
+  }
+  if ((curr_pos - last_slide_pos).norm() < sliding_thresh_meter) {
+    return;
+  }
+  last_slide_pos = curr_pos;
+
+  double voxel_size = 0.5;
+  int64_t half_voxels = static_cast<int64_t>(half_map_size_meter / voxel_size);
+  int64_t cx = static_cast<int64_t>(std::floor(curr_pos[0] / voxel_size));
+  int64_t cy = static_cast<int64_t>(std::floor(curr_pos[1] / voxel_size));
+  int64_t cz = static_cast<int64_t>(std::floor(curr_pos[2] / voxel_size));
+
+  int64_t x_max = cx + half_voxels, x_min = cx - half_voxels;
+  int64_t y_max = cy + half_voxels, y_min = cy - half_voxels;
+  int64_t z_max = cz + half_voxels, z_min = cz - half_voxels;
+
+  size_t deleted_voxels = 0;
+  for (auto it = feat_map.begin(); it != feat_map.end(); )
+  {
+    const VOXEL_LOCATION &loc = it->first;
+    if (loc.x > x_max || loc.x < x_min || loc.y > y_max || loc.y < y_min || loc.z > z_max || loc.z < z_min)
+    {
+      delete it->second;
+      it = feat_map.erase(it);
+      deleted_voxels++;
+    }
+    else
+    {
+      ++it;
+    }
+  }
+  if (deleted_voxels > 0) {
+    printf("\033[1;32m[ VIO ] Map sliding: deleted %zu visual voxels outside %.1fm. Remaining: %zu\033[0m\n",
+           deleted_voxels, half_map_size_meter, feat_map.size());
+  }
+}
+
 void VIOManager::getWarpMatrixAffineHomography(const vk::AbstractCamera &cam, const V2D &px_ref, const V3D &xyz_ref, const V3D &normal_ref,
                                                   const SE3 &T_cur_ref, const int level_ref, Matrix2d &A_cur_ref)
 {

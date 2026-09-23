@@ -61,8 +61,14 @@ echo "The 3D map will be automatically saved to: ${SCANS_DIR}/"
 echo "=========================================================="
 echo ""
 
-# Trap Ctrl+C (SIGINT) to ensure post-scan archiving routine runs
-trap 'echo ""; echo "[INFO] Scan terminated by user. Finalizing Bag and 3D map..."' INT
+# Trap Ctrl+C (SIGINT) and SIGTERM to cleanly terminate container nodes
+cleanup_and_exit() {
+    echo ""
+    echo "[INFO] Terminating container scan nodes gracefully..."
+    docker exec zenith_dev bash -c "pkill -2 -f '[f]astlivo_mapping'; pkill -2 -f '[r]os2 bag record'; sleep 1; pkill -2 -f '[m]vs_camera'; pkill -2 -f '[l]ivox_ros_driver2'; pkill -2 -f '[z]enith_health_monitor'; pkill -2 -f '[z]enith_corridor_scan'" 2>/dev/null || true
+    python3 -c "import json, time; json.dump({'updated_at': time.time(), 'state': 'IDLE', 'overall_ok': True, 'alert_level': 'ok', 'alert_msg': None}, open('${WORKSPACE_DIR}/.sensor_status.json', 'w'))" 2>/dev/null || true
+}
+trap cleanup_and_exit INT TERM
 
 # Ensure docker container is running
 if ! docker ps --format '{{.Names}}' | grep -q "^zenith_dev$"; then
@@ -76,15 +82,31 @@ if ! docker ps --format '{{.Names}}' | grep -q "^zenith_dev$"; then
     sleep 2
 fi
 
+# Ensure USB power management is set to 'on' and autosuspend is disabled
+echo "[INFO] Optimizing USB power management (autosuspend disabled, continuous power ON)..."
+docker exec zenith_dev /bin/bash -c 'for dev in /sys/bus/usb/devices/*/power/control; do echo on > "$dev" 2>/dev/null || true; done; for dev in /sys/bus/usb/devices/*/power/autosuspend; do echo -1 > "$dev" 2>/dev/null || true; done' 2>/dev/null || true
+docker exec zenith_dev /bin/bash -c 'sysctl -w vm.dirty_background_bytes=67108864; sysctl -w vm.dirty_bytes=268435456; sysctl -w net.core.rmem_max=67108864; sysctl -w net.core.rmem_default=33554432; sysctl -w net.core.wmem_max=67108864; sysctl -w net.core.wmem_default=33554432' 2>/dev/null || true
+
+# Ensure clean slate before launch (kill any stale sensor/SLAM/bag processes)
+echo "[INFO] Ensuring clean slate before launch..."
+docker exec zenith_dev bash -c "pkill -9 -f '[f]astlivo_mapping'; pkill -9 -f '[m]vs_camera'; pkill -9 -f '[l]ivox_ros_driver2'; pkill -9 -f '[z]enith_health_monitor'; pkill -9 -f '[r]os2 bag record'" 2>/dev/null || true
+sleep 2
+
 # Start bag recording in background if enabled
 if [ "${BAG_MODE}" != "none" ]; then
     echo "[INFO] Starting background ROS 2 bag recorder..."
-    docker exec -d zenith_dev /bin/bash -c "source /opt/ros/humble/setup.bash && source /root/zenith_ws/install/setup.bash && exec ros2 bag record -o ${DOCKER_BAG_PATH} ${RECORD_TOPICS}"
+    docker exec -d zenith_dev /bin/bash -c "source /opt/ros/humble/setup.bash && source /root/zenith_ws/install/setup.bash && exec ros2 bag record --max-cache-size 104857600 -o ${DOCKER_BAG_PATH} ${RECORD_TOPICS}"
     sleep 1
 fi
 
-# Run unified corridor scan launch file inside container
-docker exec -it zenith_dev /bin/bash -c "source /opt/ros/humble/setup.bash && source /root/zenith_ws/install/setup.bash && ros2 launch fast_livo zenith_corridor_scan.launch.py rviz:=False" || true
+# Initialize clean status file for UI
+python3 -c "import json, time; json.dump({'updated_at': time.time(), 'uptime': 0.0, 'state': 'INITIALIZING', 'overall_ok': True, 'alert_level': 'ok', 'alert_msg': None, 'camera': {'ok': True, 'fps': 0.0, 'status': '연결 중'}, 'lidar': {'ok': True, 'fps': 0.0, 'status': '연결 중'}, 'imu': {'ok': True, 'fps': 0.0, 'status': '연결 중'}, 'bag': {'ok': True, 'size_mb': 0, 'status': '대기 중'}, 'disk_free_gb': 190.0}, open('${WORKSPACE_DIR}/.sensor_status.json', 'w'))" 2>/dev/null || true
+chmod 666 "${WORKSPACE_DIR}/.sensor_status.json" 2>/dev/null || true
+
+echo "[INFO] Starting unified corridor scan (Camera, LiDAR, FAST-LIVO2 SLAM)..."
+# Run unified corridor scan launch file inside container (single clean instance)
+docker exec -i zenith_dev /bin/bash -c "source /opt/ros/humble/setup.bash && source /root/zenith_ws/install/setup.bash && ros2 launch fast_livo zenith_corridor_scan.launch.py rviz:=False" || true
+
 
 echo ""
 echo "[POST-SCAN] Scan stopped. Processing and archiving data..."

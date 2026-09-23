@@ -43,4 +43,12 @@ def generate_launch_description():
     )
     ld.add_action(mapping_launch)
 
+    # 4. Real-time Sensor Health Monitor (C++ Zero-Copy 200Hz Watchdog)
+    from launch.actions import ExecuteProcess
+    health_monitor = ExecuteProcess(
+        cmd=['/bin/bash', '-c', 'source /opt/ros/humble/setup.bash && source /root/zenith_ws/install/setup.bash && exec /root/zenith_ws/install/mvs_ros2_driver/lib/mvs_ros2_driver/zenith_health_monitor'],
+        output='screen'
+    )
+    ld.add_action(health_monitor)
+
     return ld

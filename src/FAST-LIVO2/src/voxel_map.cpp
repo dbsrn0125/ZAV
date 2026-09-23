@@ -35,29 +35,51 @@ void calcBodyCov(Eigen::Vector3d &pb, const float range_inc, const float degree_
 
 void loadVoxelConfig(rclcpp::Node::SharedPtr &nh, VoxelMapConfig &voxel_config)
 {
-  voxel_config.is_pub_plane_map_ = nh->declare_parameter<bool>("publish/pub_plane_en", false);
+  voxel_config.is_pub_plane_map_ = nh->declare_parameter<bool>("publish.pub_plane_en", false);
   
-  voxel_config.max_layer_ = nh->declare_parameter<int>("lio/max_layer", 1);
-  voxel_config.max_voxel_size_ = nh->declare_parameter<double>("lio/voxel_size", 0.5);
-  voxel_config.planner_threshold_ = nh->declare_parameter<double>("lio/min_eigen_value", 0.01);
-  voxel_config.sigma_num_ = nh->declare_parameter<double>("lio/sigma_num", 3);
-  voxel_config.beam_err_ = nh->declare_parameter<double>("lio/beam_err", 0.02);
-  voxel_config.dept_err_ = nh->declare_parameter<double>("lio/dept_err", 0.05);
+  voxel_config.max_layer_ = nh->declare_parameter<int>("lio.max_layer", 1);
+  voxel_config.max_voxel_size_ = nh->declare_parameter<double>("lio.voxel_size", 0.5);
+  voxel_config.planner_threshold_ = nh->declare_parameter<double>("lio.min_eigen_value", 0.01);
+  voxel_config.sigma_num_ = nh->declare_parameter<double>("lio.sigma_num", 3);
+  voxel_config.beam_err_ = nh->declare_parameter<double>("lio.beam_err", 0.02);
+  voxel_config.dept_err_ = nh->declare_parameter<double>("lio.dept_err", 0.05);
 
   {
-    auto layer_init_num = nh->declare_parameter("lio/layer_init_num", std::vector<int64_t>{5,5,5,5,5});
+    auto layer_init_num = nh->declare_parameter("lio.layer_init_num", std::vector<int64_t>{5,5,5,5,5});
     voxel_config.layer_init_num_.clear();
     for (const auto l: layer_init_num) {
       voxel_config.layer_init_num_.push_back(l);
     }
   }
 
-  voxel_config.max_points_num_ = nh->declare_parameter<int>("lio/max_points_num", 50);
-  voxel_config.max_iterations_ = nh->declare_parameter<int>("lio/max_iterations", 5);
+  voxel_config.max_points_num_ = nh->declare_parameter<int>("lio.max_points_num", 50);
+  voxel_config.max_iterations_ = nh->declare_parameter<int>("lio.max_iterations", 5);
 
-  voxel_config.map_sliding_en = nh->declare_parameter<bool>("local_map/map_sliding_en", false);
-  voxel_config.half_map_size = nh->declare_parameter<int>("local_map/half_map_size", 100);
-  voxel_config.sliding_thresh = nh->declare_parameter<double>("local_map/sliding_thresh", 8);
+  voxel_config.map_sliding_en = nh->declare_parameter<bool>("local_map.map_sliding_en", false);
+  try {
+    voxel_config.half_map_size = nh->declare_parameter<int>("local_map.half_map_size", 100);
+  } catch (...) {
+    try {
+      voxel_config.half_map_size = static_cast<int>(nh->declare_parameter<double>("local_map.half_map_size", 100.0));
+    } catch (...) {
+      voxel_config.half_map_size = 50;
+    }
+  }
+  try {
+    voxel_config.sliding_thresh = nh->declare_parameter<double>("local_map.sliding_thresh", 8.0);
+  } catch (...) {
+    try {
+      voxel_config.sliding_thresh = static_cast<double>(nh->declare_parameter<int64_t>("local_map.sliding_thresh", 8));
+    } catch (...) {
+      voxel_config.sliding_thresh = 5.0;
+    }
+  }
+
+  std::cout << "\033[1;36m[ VoxelMap ] Config loaded: map_sliding_en=" << (voxel_config.map_sliding_en ? "TRUE" : "FALSE")
+            << ", half_map_size=" << voxel_config.half_map_size
+            << " (" << voxel_config.half_map_size * voxel_config.max_voxel_size_ << "m)"
+            << ", sliding_thresh=" << voxel_config.sliding_thresh << "m"
+            << ", voxel_size=" << voxel_config.max_voxel_size_ << "\033[0m" << std::endl;
 }
 
 void VoxelOctoTree::init_plane(const std::vector<pointWithVar> &points, VoxelPlane *plane)

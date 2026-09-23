@@ -54,8 +54,17 @@ target_link_libraries(mvs_camera_node
   MvCameraControl
 )
 
+# C++ Zenith Health Monitor (Zero-copy 200Hz tracking)
+add_executable(zenith_health_monitor src/health_monitor.cpp)
+ament_target_dependencies(zenith_health_monitor rclcpp sensor_msgs std_msgs)
+target_link_libraries(zenith_health_monitor
+  ${rclcpp_LIBRARIES}
+  ${sensor_msgs_LIBRARIES}
+  ${std_msgs_LIBRARIES}
+)
+
 # 安装目标
-install(TARGETS mvs_camera_node
+install(TARGETS mvs_camera_node zenith_health_monitor
   DESTINATION lib/${PROJECT_NAME})
 
 # 安装 launch 文件

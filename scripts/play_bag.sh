@@ -39,6 +39,7 @@ fi
 
 ARG_BAG="$1"
 ARG_MODE="$2"
+ARG_RATE="${3:-1.0}"
 
 echo "=========================================================="
 echo "    Zenith Drone: ROS 2 Bag Replay & FAST-LIVO2 RViz2"
@@ -107,10 +108,11 @@ echo "----------------------------------------------------------"
 MODE_CHOICE="${ARG_MODE}"
 if [ -z "${MODE_CHOICE}" ]; then
     echo "Select Playback Mode:"
-    echo "  1) Pure Replay:  Play Bag directly and open RViz2"
-    echo "  2) Offline SLAM: Re-run FAST-LIVO2 on Raw Sensors + RViz2 (Recommended)"
+    echo "  1) Pure Replay:      Play Bag directly and open RViz2"
+    echo "  2) LIVO SLAM (RGB):  FAST-LIVO2 (LiDAR + RGB Camera, Default)"
+    echo "  3) Pure LIO (LiDAR): FAST-LIVO2 (LiDAR + IMU only, Full 10min scan)"
     echo "----------------------------------------------------------"
-    read -t 10 -p "Select mode [1 or 2] (Default: 2 in 10s): " USER_MODE || USER_MODE="2"
+    read -t 10 -p "Select mode [1, 2, or 3] (Default: 2 in 10s): " USER_MODE || USER_MODE="2"
     echo ""
     MODE_CHOICE="${USER_MODE:-2}"
 fi
@@ -119,70 +121,62 @@ case "${MODE_CHOICE}" in
     1|--replay|-r)
         RUN_MODE="1"
         ;;
-    2|--slam|-s)
+    2|--slam|-s|--livo)
         RUN_MODE="2"
+        ;;
+    3|--lio|-l|--lidar)
+        RUN_MODE="3"
         ;;
     *)
         RUN_MODE="2"
         ;;
 esac
 
+# Determine interactive flag
+DOCKER_FLAGS="-i"
+if [ -t 0 ] && [ -t 1 ]; then
+    DOCKER_FLAGS="-it"
+fi
+
+# Clean up any lingering live sensor nodes from host before replay
+docker exec zenith_dev pkill -9 -f "[l]ivox_ros_driver2" 2>/dev/null || true
+docker exec zenith_dev pkill -9 -f "[m]vs_camera_node" 2>/dev/null || true
+docker exec zenith_dev pkill -9 -f "[f]astlivo_mapping" 2>/dev/null || true
+docker exec zenith_dev pkill -9 -f "[r]viz2" 2>/dev/null || true
+docker exec zenith_dev pkill -9 -f "[r]osbag2" 2>/dev/null || true
+docker exec zenith_dev pkill -9 -f "[r]os2 bag play" 2>/dev/null || true
+sleep 1
+
 if [ "${RUN_MODE}" = "2" ]; then
-    echo "[MODE 2] Offline FAST-LIVO2 SLAM with RViz2..."
+    echo "[MODE 2] Offline FAST-LIVO2 LIVO SLAM (LiDAR + Camera RGB) with RViz2..."
     echo "[INFO] Running FAST-LIVO2 mapping node and RViz2..."
     echo "[INFO] Replaying raw sensor topics: /livox/lidar, /livox/imu, /camera/image_raw"
     echo "----------------------------------------------------------"
-    
-    docker exec -it zenith_dev /bin/bash -c "
-        source /opt/ros/humble/setup.bash
-        source /root/zenith_ws/install/setup.bash
-        export DISPLAY=${DISPLAY:-:0}
-        [ -f /root/zenith_ws/.docker_xauth ] && export XAUTHORITY=/root/zenith_ws/.docker_xauth
-
-        # 1. Start FAST-LIVO2 mapping node with RViz2 in background
-        ros2 launch fast_livo zenith_mapping.launch.py rviz:=True &
-        SLAM_PID=\$!
-        sleep 4
-
-        # 2. Play bag with 1.0x real-time speed
-        echo ''
-        echo '=========================================================='
-        echo '>>> [PLAYING BAG] Streaming sensor data into FAST-LIVO2... <<<'
-        echo 'Rate: 1.0x (Real-time speed)'
-        echo 'Press Ctrl+C to stop early.'
-        echo '=========================================================='
-        ros2 bag play ${DOCKER_BAG} --rate 1.0 || true
-
-        echo ''
-        echo '[INFO] Bag playback completed.'
-        echo '[INFO] Waiting for user to close RViz2 window (or press Ctrl+C)...'
-        wait \$SLAM_PID 2>/dev/null || true
-    "
+elif [ "${RUN_MODE}" = "3" ]; then
+    echo "[MODE 3] Offline FAST-LIVO2 Pure LIO SLAM (LiDAR + IMU only) with RViz2..."
+    echo "[INFO] Running FAST-LIVO2 mapping node (Camera Disabled) and RViz2..."
+    echo "[INFO] Replaying raw sensor topics: /livox/lidar, /livox/imu"
+    echo "----------------------------------------------------------"
 else
     echo "[MODE 1] Pure Bag Replay & RViz2..."
     echo "----------------------------------------------------------"
+fi
 
-    docker exec -it zenith_dev /bin/bash -c "
-        source /opt/ros/humble/setup.bash
-        source /root/zenith_ws/install/setup.bash
-        export DISPLAY=${DISPLAY:-:0}
-        [ -f /root/zenith_ws/.docker_xauth ] && export XAUTHORITY=/root/zenith_ws/.docker_xauth
+docker exec ${DOCKER_FLAGS} \
+    -e DOCKER_BAG="${DOCKER_BAG}" \
+    -e ARG_RATE="${ARG_RATE}" \
+    -e RUN_MODE="${RUN_MODE}" \
+    -e DISPLAY="${DISPLAY:-:0}" \
+    zenith_dev /root/zenith_ws/scripts/docker_play.sh
 
-        # 1. Start RViz2 in background
-        rviz2 -d /root/zenith_ws/src/FAST-LIVO2/rviz_cfg/fast_livo2.rviz &
-        RVIZ_PID=\$!
-        sleep 3
-
-        # 2. Play bag in loop
-        echo ''
-        echo '=========================================================='
-        echo '>>> [PLAYING BAG] Loop playback started... <<<'
-        echo 'Press Ctrl+C to stop.'
-        echo '=========================================================='
-        ros2 bag play ${DOCKER_BAG} --loop || true
-
-        kill \$RVIZ_PID 2>/dev/null || true
-    "
+PCD_SRC="${WORKSPACE_DIR}/src/FAST-LIVO2/Log/PCD/all_downsampled_points.pcd"
+if [ -f "${PCD_SRC}" ] && [ -s "${PCD_SRC}" ]; then
+    DEST_PCD="${WORKSPACE_DIR}/scans/${BAG_NAME}_color.pcd"
+    cp "${PCD_SRC}" "${DEST_PCD}"
+    echo ""
+    echo "[SUCCESS] 3D RGB Color PCD Map saved to:"
+    echo "          ${DEST_PCD}"
+    echo "          Size: $(du -h "${DEST_PCD}" | cut -f1)"
 fi
 
 echo "=========================================================="
