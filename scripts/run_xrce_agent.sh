@@ -1,6 +1,12 @@
 #!/bin/bash
 # Zenith WS: Micro-XRCE-DDS Agent Runner
-DEV="${1:-/dev/ttyMSM0}"
+if [ -n "$1" ]; then
+    DEV="$1"
+elif [ -e "/dev/ttyUSB0" ]; then
+    DEV="/dev/ttyUSB0"
+else
+    DEV="/dev/ttyMSM0"
+fi
 BAUD="${2:-921600}"
 
 # Ensure docker container is running
