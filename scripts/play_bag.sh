@@ -108,11 +108,13 @@ echo "----------------------------------------------------------"
 MODE_CHOICE="${ARG_MODE}"
 if [ -z "${MODE_CHOICE}" ]; then
     echo "Select Playback Mode:"
-    echo "  1) Pure Replay:      Play Bag directly and open RViz2"
-    echo "  2) LIVO SLAM (RGB):  FAST-LIVO2 (LiDAR + RGB Camera, Default)"
-    echo "  3) Pure LIO (LiDAR): FAST-LIVO2 (LiDAR + IMU only, Full 10min scan)"
+    echo "  1) Pure Replay:           Play Bag directly and open RViz2"
+    echo "  2) LIVO SLAM (RGB+RViz):  FAST-LIVO2 (LiDAR + RGB Camera) with RViz2 (Default)"
+    echo "  3) Pure LIO (LiDAR+RViz): FAST-LIVO2 (LiDAR + IMU only) with RViz2"
+    echo "  4) Headless LIVO (RGB):   FAST-LIVO2 (LiDAR + RGB Camera, NO RViz - Low CPU)"
+    echo "  5) Headless LIO (LiDAR):  FAST-LIVO2 (LiDAR + IMU only, NO RViz - Low CPU)"
     echo "----------------------------------------------------------"
-    read -t 10 -p "Select mode [1, 2, or 3] (Default: 2 in 10s): " USER_MODE || USER_MODE="2"
+    read -t 10 -p "Select mode [1, 2, 3, 4, or 5] (Default: 2 in 10s): " USER_MODE || USER_MODE="2"
     echo ""
     MODE_CHOICE="${USER_MODE:-2}"
 fi
@@ -126,6 +128,12 @@ case "${MODE_CHOICE}" in
         ;;
     3|--lio|-l|--lidar)
         RUN_MODE="3"
+        ;;
+    4|--headless-livo|--headless|-hl)
+        RUN_MODE="4"
+        ;;
+    5|--headless-lio|-h)
+        RUN_MODE="5"
         ;;
     *)
         RUN_MODE="2"
@@ -155,6 +163,16 @@ if [ "${RUN_MODE}" = "2" ]; then
 elif [ "${RUN_MODE}" = "3" ]; then
     echo "[MODE 3] Offline FAST-LIVO2 Pure LIO SLAM (LiDAR + IMU only) with RViz2..."
     echo "[INFO] Running FAST-LIVO2 mapping node (Camera Disabled) and RViz2..."
+    echo "[INFO] Replaying raw sensor topics: /livox/lidar, /livox/imu"
+    echo "----------------------------------------------------------"
+elif [ "${RUN_MODE}" = "4" ]; then
+    echo "[MODE 4] Offline Headless FAST-LIVO2 LIVO SLAM (LiDAR + Camera RGB, NO RViz2)..."
+    echo "[INFO] Running FAST-LIVO2 mapping node headless (Benchmark Low CPU)..."
+    echo "[INFO] Replaying raw sensor topics: /livox/lidar, /livox/imu, /camera/image_raw"
+    echo "----------------------------------------------------------"
+elif [ "${RUN_MODE}" = "5" ]; then
+    echo "[MODE 5] Offline Headless FAST-LIVO2 Pure LIO SLAM (LiDAR + IMU only, NO RViz2)..."
+    echo "[INFO] Running FAST-LIVO2 mapping node headless (Benchmark Low CPU)..."
     echo "[INFO] Replaying raw sensor topics: /livox/lidar, /livox/imu"
     echo "----------------------------------------------------------"
 else

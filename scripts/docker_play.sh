@@ -19,14 +19,20 @@ pkill -9 -f "[m]vs_camera_node" 2>/dev/null || true
 sleep 1
 
 # Check mode
-if [ "${RUN_MODE}" = "2" ] || [ "${RUN_MODE}" = "3" ]; then
-    if [ "${RUN_MODE}" = "2" ]; then
-        echo "[DOCKER] Launching FAST-LIVO2 (LIVO: LiDAR + RGB Camera) with RViz2..."
-        ros2 launch fast_livo zenith_mapping.launch.py camera:=True rviz:=True </dev/null &
-    else
-        echo "[DOCKER] Launching FAST-LIVO2 (Pure LIO: LiDAR + IMU only) with RViz2..."
-        ros2 launch fast_livo zenith_mapping.launch.py camera:=False rviz:=True </dev/null &
+if [ "${RUN_MODE}" = "2" ] || [ "${RUN_MODE}" = "3" ] || [ "${RUN_MODE}" = "4" ] || [ "${RUN_MODE}" = "5" ]; then
+    ENABLE_CAM="True"
+    ENABLE_RVIZ="True"
+
+    if [ "${RUN_MODE}" = "3" ] || [ "${RUN_MODE}" = "5" ]; then
+        ENABLE_CAM="False"
     fi
+
+    if [ "${RUN_MODE}" = "4" ] || [ "${RUN_MODE}" = "5" ]; then
+        ENABLE_RVIZ="False"
+    fi
+
+    echo "[DOCKER] Launching FAST-LIVO2 (camera:=${ENABLE_CAM}, rviz:=${ENABLE_RVIZ})..."
+    ros2 launch fast_livo zenith_mapping.launch.py camera:=${ENABLE_CAM} rviz:=${ENABLE_RVIZ} </dev/null &
     SLAM_PID=$!
 
     cleanup() {
@@ -43,14 +49,15 @@ if [ "${RUN_MODE}" = "2" ] || [ "${RUN_MODE}" = "3" ]; then
     }
     trap cleanup INT TERM EXIT
 
-    # Wait for RViz2 and laserMapping to be initialized
+    # Wait for laserMapping (and RViz2 if enabled) to be initialized
     sleep 4
 
     echo ""
     echo "=========================================================="
     echo ">>> [PLAYING BAG] Streaming sensor data into FAST-LIVO2... <<<"
-    echo "Rate: ${ARG_RATE}x speed"
-    echo "Bag:  ${DOCKER_BAG}"
+    echo "Rate:     ${ARG_RATE}x speed"
+    echo "Mode:     ${RUN_MODE} (camera=${ENABLE_CAM}, rviz=${ENABLE_RVIZ})"
+    echo "Bag:      ${DOCKER_BAG}"
     echo "Press Ctrl+C to stop early."
     echo "=========================================================="
 
@@ -59,11 +66,16 @@ if [ "${RUN_MODE}" = "2" ] || [ "${RUN_MODE}" = "3" ]; then
     echo ""
     echo "=========================================================="
     echo "[SUCCESS] Bag playback completed!"
-    echo "[INFO] RViz2 is still open showing the complete 3D map."
-    echo "[INFO] Close the RViz2 window or press Ctrl+C to exit."
-    echo "=========================================================="
-
-    wait $SLAM_PID 2>/dev/null || true
+    if [ "${ENABLE_RVIZ}" = "True" ]; then
+        echo "[INFO] RViz2 is still open showing the complete 3D map."
+        echo "[INFO] Close the RViz2 window or press Ctrl+C to exit."
+        echo "=========================================================="
+        wait $SLAM_PID 2>/dev/null || true
+    else
+        echo "[INFO] Headless mode: Finalizing FAST-LIVO2 and saving PCD map..."
+        echo "=========================================================="
+        sleep 3
+    fi
     trap - INT TERM EXIT
     cleanup
 
