@@ -37,3 +37,8 @@ scans/*.pcd
 
 # Runtime sensor status
 .sensor_status.json
+
+# Local dataset & external packages
+data/
+src/px4_msgs/
+

@@ -1,0 +1,64 @@
+#!/bin/sh
+#
+# @name ZAV Quadrotor Isaac Sim SITL
+#
+# @type Quadrotor Wide
+#
+
+. ${R}etc/init.d/rc.mc_defaults
+
+param set-default CA_AIRFRAME 0
+
+# ZAV Quad X Actuator Geometry (Arm: 140mm, dx=0.150m, dy=0.150m from NxtPX4v2_Copter_PX4v1.14.3.param)
+param set-default CA_ROTOR_COUNT 4
+param set-default CA_ROTOR0_PX 0.150
+param set-default CA_ROTOR0_PY 0.150
+param set-default CA_ROTOR0_KM 0.05
+param set-default CA_ROTOR1_PX -0.150
+param set-default CA_ROTOR1_PY -0.150
+param set-default CA_ROTOR1_KM 0.05
+param set-default CA_ROTOR2_PX 0.150
+param set-default CA_ROTOR2_PY -0.150
+param set-default CA_ROTOR2_KM -0.05
+param set-default CA_ROTOR3_PX -0.150
+param set-default CA_ROTOR3_PY 0.150
+param set-default CA_ROTOR3_KM -0.05
+
+# Flight Control & Attitude PID Gains (from real flight parameters)
+param set-default MC_ROLL_P 6.5
+param set-default MC_PITCH_P 6.5
+param set-default MC_YAW_P 2.8
+param set-default MC_ROLLRATE_P 0.15
+param set-default MC_ROLLRATE_I 0.20
+param set-default MC_ROLLRATE_D 0.003
+param set-default MC_PITCHRATE_P 0.15
+param set-default MC_PITCHRATE_I 0.20
+param set-default MC_PITCHRATE_D 0.003
+param set-default MC_YAWRATE_P 0.20
+param set-default MC_YAWRATE_I 0.10
+param set-default MC_YAWRATE_D 0.0
+
+# Hover Throttle Estimate (F90 + HQ70403 at 1.99kg hover ~ 33%)
+param set-default MPC_THR_HOVER 0.33
+
+# Motor PWM outputs mapping
+param set-default PWM_MAIN_FUNC1 101
+param set-default PWM_MAIN_FUNC2 102
+param set-default PWM_MAIN_FUNC3 103
+param set-default PWM_MAIN_FUNC4 104
+
+# Simulation specific overrides:
+# 1. 배터리 방전 시뮬레이션: DRAIN을 10일(864,000초)로 설정하여 100% 무한 지속
+param set SIM_BAT_DRAIN 864000
+param set SIM_BAT_MIN_PCT 50.0
+param set COM_LOW_BAT_ACT 0
+param set CBRK_SUPPLY_CHK 894281
+
+# 2. 페일세이프 오버라이드: 시뮬레이션 환경에서 RC 조종기 부재로 인한 강제 착륙(RTL) 차단
+#    - NAV_RCL_ACT 0: RC Loss 페일세이프 비활성화 (0: Disabled)
+#    - COM_RCL_EXCEPT 4: Offboard 모드 비행 중 RC 미연결 예외 허용 (4: Offboard mode)
+param set-default NAV_RCL_ACT 0
+param set-default COM_RCL_EXCEPT 4
+
+# Micro XRCE-DDS Client for ROS 2 (UDP localhost 8888)
+uxrce_dds_client start -t udp -p 8888

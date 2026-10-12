@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# [Zenith Aerial Vehicle] ZAV Simulation 자동 환경 구축 스크립트
+#
+# 팀원(Ubuntu/WSL2) 환경에서 PX4 SITL 에어프레임 등록, Pegasus 기체 모델 배치,
+# 런처 등록 및 ROS 2 제어기 빌드를 한 번에 수행합니다.
+# ==============================================================================
+
+set -e
+
+# 터미널 출력 색상 정의
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m'
+
+echo -e "${BLUE}==========================================================${NC}"
+echo -e "${BLUE}   [ZAV Simulation] 시뮬레이션 환경 자동 설정 시작...   ${NC}"
+echo -e "${BLUE}==========================================================${NC}"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WS_DIR="$(dirname "$SCRIPT_DIR")"
+
+PX4_DIR="${PX4_DIR:-$HOME/PX4-Autopilot}"
+PEGASUS_DIR="${PEGASUS_DIR:-$HOME/PegasusSimulator}"
+
+# 1. PX4-Autopilot 에어프레임 설정
+echo -e "\n${YELLOW}[1/4] PX4 에어프레임 설정 중...${NC}"
+if [ -d "$PX4_DIR" ]; then
+    AIRFRAME_DIR="$PX4_DIR/ROMFS/px4fmu_common/init.d-posix/airframes"
+    mkdir -p "$AIRFRAME_DIR"
+    cp "$SCRIPT_DIR/px4/10020_isaac_zav" "$AIRFRAME_DIR/"
+    echo -e "  - 10020_isaac_zav 에어프레임 복사 완료: $AIRFRAME_DIR"
+
+    CMAKE_FILE="$AIRFRAME_DIR/CMakeLists.txt"
+    if [ -f "$CMAKE_FILE" ]; then
+        if ! grep -q "10020_isaac_zav" "$CMAKE_FILE"; then
+            sed -i '/px4_add_airframe(/a \\t10020_isaac_zav' "$CMAKE_FILE"
+            echo -e "  - CMakeLists.txt 에어프레임 타겟 등록 완료"
+        else
+            echo -e "  - CMakeLists.txt에 이미 등록되어 있습니다."
+        fi
+    fi
+else
+    echo -e "${RED}  [경고] $PX4_DIR 경로를 찾을 수 없습니다.${NC}"
+fi
+
+# 2. Pegasus Simulator 기체 및 USD 에셋 설정
+echo -e "\n${YELLOW}[2/4] Pegasus 기체 및 USD 에셋 설정 중...${NC}"
+if [ -d "$PEGASUS_DIR" ]; then
+    VEHICLE_DIR="$PEGASUS_DIR/extensions/pegasus.simulator/pegasus/simulator/logic/vehicles/multirotors"
+    ASSET_DIR="$PEGASUS_DIR/extensions/pegasus.simulator/pegasus/simulator/assets/Robots/ZAV_v1"
+    EXAMPLE_DIR="$PEGASUS_DIR/examples"
+
+    mkdir -p "$VEHICLE_DIR" "$ASSET_DIR" "$EXAMPLE_DIR"
+    cp "$SCRIPT_DIR/pegasus/zav_v1.py" "$VEHICLE_DIR/"
+    cp "$SCRIPT_DIR/pegasus/assets/ZAV_v1/ZAV_v1.usd" "$ASSET_DIR/"
+    cp "$SCRIPT_DIR/pegasus/run_zav_plane.py" "$EXAMPLE_DIR/"
+    echo -e "  - zav_v1.py (공력 모델), ZAV_v1.usd (3D 모델), run_zav_plane.py 복사 완료"
+else
+    echo -e "${RED}  [경고] $PEGASUS_DIR 경로를 찾을 수 없습니다.${NC}"
+fi
+
+# 3. 2분할 대시보드 런처 및 단축어 등록
+echo -e "\n${YELLOW}[3/4] 2분할 대시보드 런처 및 bashrc 단축어 등록...${NC}"
+cp "$SCRIPT_DIR/scripts/run_zav_sim.sh" "$HOME/run_zav_sim.sh"
+chmod +x "$HOME/run_zav_sim.sh"
+
+if ! grep -q "alias zav_sim=" "$HOME/.bashrc"; then
+    echo "alias zav_sim='$HOME/run_zav_sim.sh'" >> "$HOME/.bashrc"
+    echo -e "  - ~/.bashrc에 'alias zav_sim' 등록 완료"
+else
+    echo -e "  - ~/.bashrc에 'alias zav_sim'이 이미 존재합니다."
+fi
+
+# 4. ROS 2 패키지 다운로드 및 빌드 (px4_msgs, zav_control)
+echo -e "\n${YELLOW}[4/4] ROS 2 제어 패키지 빌드 중...${NC}"
+if [ ! -d "$WS_DIR/src/px4_msgs" ]; then
+    echo -e "  - px4_msgs (release/1.14) 공식 저장소 클론 중..."
+    git clone -b release/1.14 https://github.com/PX4/px4_msgs.git "$WS_DIR/src/px4_msgs"
+fi
+
+if [ -d "$WS_DIR/src/zav_control" ]; then
+    cd "$WS_DIR"
+    if [ -f /opt/ros/humble/setup.bash ]; then
+        source /opt/ros/humble/setup.bash
+    fi
+    colcon build --symlink-install --packages-select px4_msgs zav_control
+    echo -e "${GREEN}  - ROS 2 패키지 빌드 완료!${NC}"
+fi
+
+echo -e "\n${GREEN}==========================================================${NC}"
+echo -e "${GREEN}   [ZAV Simulation] 모든 환경 설정이 성공적으로 완료되었습니다!   ${NC}"
+echo -e "${GREEN}   새 터미널을 열거나 'source ~/.bashrc' 실행 후,         ${NC}"
+echo -e "${GREEN}   'zav_sim' 명령어를 입력하면 시뮬레이터가 기동됩니다.   ${NC}"
+echo -e "${GREEN}==========================================================${NC}"
