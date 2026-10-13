@@ -81,8 +81,33 @@ tmux split-window -v -p 40 -t $SESSION_NAME:0.0
 tmux select-pane -t $SESSION_NAME:0.1 -T "🟢 [하단] Pegasus / Isaac Sim 파이썬 로그"
 
 if grep -qi microsoft /proc/version 2>/dev/null; then
-    # WSL2 환경: 윈도우 Isaac Sim 실행 및 창 종료 시 전체 세션 폭파
-    tmux send-keys -t $SESSION_NAME:0.1 "sleep 3 && /mnt/c/Windows/System32/cmd.exe /c 'C:/issac-sim/python.bat C:/UAVProject/PegasusSimulator/examples/zav_sim.py'; tmux kill-session -t $SESSION_NAME" C-m
+    # WSL2 환경: 윈도우 Isaac Sim 탐색 (C:/isaac-sim, C:/issac-sim, 바탕화면, 옴니버스 기본경로)
+    WIN_ISAAC_BAT=""
+    if [ -f "/mnt/c/isaac-sim/python.bat" ]; then
+        WIN_ISAAC_BAT="C:/isaac-sim/python.bat"
+    elif [ -f "/mnt/c/issac-sim/python.bat" ]; then
+        WIN_ISAAC_BAT="C:/issac-sim/python.bat"
+    else
+        # 윈도우 바탕화면 또는 옴니버스 기본 경로 자동 탐색
+        DETECTED=$(find /mnt/c/Users/*/Desktop /mnt/c/Users/*/AppData/Local/ov/pkg -maxdepth 3 -name "python.bat" 2>/dev/null | grep -i "isaac" | head -n 1)
+        if [ -n "$DETECTED" ]; then
+            WIN_ISAAC_BAT=$(wslpath -w "$DETECTED" | tr '\\' '/')
+        fi
+    fi
+
+    # zav_sim.py 윈도우 경로 산출 (C:\UAVProject 우선, 없으면 WSL 경로 자동 변환)
+    if [ -f "/mnt/c/UAVProject/PegasusSimulator/examples/zav_sim.py" ]; then
+        WIN_SIM_SCRIPT="C:/UAVProject/PegasusSimulator/examples/zav_sim.py"
+    else
+        WIN_SIM_SCRIPT=$(wslpath -w "$HOME/PegasusSimulator/examples/zav_sim.py" | tr '\\' '/')
+    fi
+
+    if [ -n "$WIN_ISAAC_BAT" ]; then
+        tmux send-keys -t $SESSION_NAME:0.1 "sleep 3 && /mnt/c/Windows/System32/cmd.exe /c '$WIN_ISAAC_BAT $WIN_SIM_SCRIPT'; tmux kill-session -t $SESSION_NAME" C-m
+    else
+        # 윈도우에서 못 찾았을 경우 WSL2 내부 파이썬 환경으로 폴백
+        tmux send-keys -t $SESSION_NAME:0.1 "sleep 3 && python3 ~/PegasusSimulator/examples/zav_sim.py 2>&1 | tee $ISAAC_LOG; tmux kill-session -t $SESSION_NAME" C-m
+    fi
 else
     # Native Linux 환경 (팀원 PC): 가상환경(VIRTUAL_ENV / isaac_env / isaacsim_env) 및 Standalone python.sh 자동 감지
     if [ -n "$VIRTUAL_ENV" ] && [ -f "$VIRTUAL_ENV/bin/python" ]; then
@@ -90,7 +115,7 @@ else
     elif [ -f "$HOME/isaac_env/bin/python" ]; then
         ISAAC_PY="$HOME/isaac_env/bin/python"
     elif [ -f "$HOME/isaacsim_env/bin/python" ]; then
-        ISAAC_PY="$HOME/isaacsim_env/bin/python"
+        ISAAC_PY="$HOME/isaac_env/bin/python"
     elif [ -f "$HOME/isaacsim/python.sh" ]; then
         ISAAC_PY="$HOME/isaacsim/python.sh"
     elif [ -f "$HOME/isaac-sim/python.sh" ]; then
