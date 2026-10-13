@@ -34,6 +34,15 @@ if [ -d "$PX4_DIR" ]; then
     cp "$SCRIPT_DIR/px4/10020_isaac_zav" "$AIRFRAME_DIR/"
     echo -e "  - 10020_isaac_zav 에어프레임 복사 완료: $AIRFRAME_DIR"
 
+    # 이미 빌드된 ROMFS 디렉토리가 있으면 즉시 동기화 및 이전 파라미터 캐시 초기화
+    BUILD_AIRFRAME_DIR="$PX4_DIR/build/px4_sitl_default/etc/init.d-posix/airframes"
+    if [ -d "$BUILD_AIRFRAME_DIR" ]; then
+        cp "$SCRIPT_DIR/px4/10020_isaac_zav" "$BUILD_AIRFRAME_DIR/"
+        rm -f "$PX4_DIR/build/px4_sitl_default/rootfs/parameters.bson" \
+              "$PX4_DIR/build/px4_sitl_default/rootfs/parameters_backup.bson"
+        echo -e "  - 빌드된 ROMFS 에어프레임 즉시 갱신 및 구버전 파라미터 캐시 초기화 완료"
+    fi
+
     # (A) ROMFS airframes/CMakeLists.txt 에 10020_isaac_zav 등록
     CMAKE_FILE="$AIRFRAME_DIR/CMakeLists.txt"
     if [ -f "$CMAKE_FILE" ]; then

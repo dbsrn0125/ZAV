@@ -289,7 +289,7 @@ class ZAVTeleopNode(Node):
         mode.acceleration = False
         mode.attitude = False
         mode.body_rate = False
-        mode.timestamp = int(self.get_clock().now().nanoseconds / 1000)
+        mode.timestamp = 0
         self.offboard_mode_pub.publish(mode)
 
     def send_vehicle_command(self, command, param1=0.0, param2=0.0, param7=0.0):
@@ -304,7 +304,7 @@ class ZAVTeleopNode(Node):
         cmd.source_system = 1
         cmd.source_component = 1
         cmd.from_external = True
-        cmd.timestamp = int(self.get_clock().now().nanoseconds / 1000)
+        cmd.timestamp = 0
         self.cmd_pub.publish(cmd)
 
     def _update_multi_key_targets(self):
@@ -367,7 +367,7 @@ class ZAVTeleopNode(Node):
         self.publish_offboard_mode()
 
         sp = TrajectorySetpoint()
-        sp.timestamp = int(self.get_clock().now().nanoseconds / 1000)
+        sp.timestamp = 0
 
         # 1. 이륙 시퀀스: 수평 위치 사수하며 수직 상승
         if self.is_taking_off:
