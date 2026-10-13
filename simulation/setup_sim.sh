@@ -3,7 +3,7 @@
 # [Zenith Aerial Vehicle] ZAV Simulation 자동 환경 구축 스크립트
 #
 # 팀원(Ubuntu/WSL2) 환경에서 PX4 SITL 에어프레임 등록, Pegasus 기체 모델 배치,
-# 런처 등록 및 ROS 2 제어기 빌드를 한 번에 수행합니다.
+# params.py / __init__.py 자동 등록, 런처 등록 및 ROS 2 제어기 빌드를 수행합니다.
 # ==============================================================================
 
 set -e
@@ -46,11 +46,15 @@ else
     echo -e "${RED}  [경고] $PX4_DIR 경로를 찾을 수 없습니다.${NC}"
 fi
 
-# 2. Pegasus Simulator 기체 및 USD 에셋 설정
-echo -e "\n${YELLOW}[2/4] Pegasus 기체 및 USD 에셋 설정 중...${NC}"
+# 2. Pegasus Simulator 기체 및 USD 에셋 설정 + 파이썬 모듈 자동 등록
+echo -e "\n${YELLOW}[2/4] Pegasus 기체, USD 에셋 및 파이썬 모듈 등록 중...${NC}"
 if [ -d "$PEGASUS_DIR" ]; then
-    VEHICLE_DIR="$PEGASUS_DIR/extensions/pegasus.simulator/pegasus/simulator/logic/vehicles/multirotors"
-    ASSET_DIR="$PEGASUS_DIR/extensions/pegasus.simulator/pegasus/simulator/assets/Robots/ZAV_v1"
+    SIM_ROOT="$PEGASUS_DIR/extensions/pegasus.simulator/pegasus/simulator"
+    VEHICLE_DIR="$SIM_ROOT/logic/vehicles/multirotors"
+    VEHICLES_INIT="$SIM_ROOT/logic/vehicles/__init__.py"
+    MULTIROTORS_INIT="$VEHICLE_DIR/__init__.py"
+    PARAMS_FILE="$SIM_ROOT/params.py"
+    ASSET_DIR="$SIM_ROOT/assets/Robots/ZAV_v1"
     EXAMPLE_DIR="$PEGASUS_DIR/examples"
 
     mkdir -p "$VEHICLE_DIR" "$ASSET_DIR" "$EXAMPLE_DIR"
@@ -58,6 +62,57 @@ if [ -d "$PEGASUS_DIR" ]; then
     cp "$SCRIPT_DIR/pegasus/assets/ZAV_v1/ZAV_v1.usd" "$ASSET_DIR/"
     cp "$SCRIPT_DIR/pegasus/zav_sim.py" "$EXAMPLE_DIR/"
     echo -e "  - zav_v1.py (공력 모델), ZAV_v1.usd (3D 모델), zav_sim.py 복사 완료"
+
+    # (A) multirotors/__init__.py 에 ZAV_v1 클래스 등록
+    if [ ! -f "$MULTIROTORS_INIT" ]; then
+        cat << 'PYEOF' > "$MULTIROTORS_INIT"
+from .iris import Iris
+from .zav_v1 import ZAV_v1
+PYEOF
+        echo -e "  - multirotors/__init__.py 생성 및 ZAV_v1 등록 완료"
+    elif ! grep -q "ZAV_v1" "$MULTIROTORS_INIT"; then
+        echo "from .zav_v1 import ZAV_v1" >> "$MULTIROTORS_INIT"
+        echo -e "  - multirotors/__init__.py 에 ZAV_v1 추가 완료"
+    else
+        echo -e "  - multirotors/__init__.py 에 ZAV_v1이 이미 등록되어 있습니다."
+    fi
+
+    # (B) vehicles/__init__.py 에 ZAV_v1 클래스 등록
+    if [ -f "$VEHICLES_INIT" ]; then
+        if ! grep -q "ZAV_v1" "$VEHICLES_INIT"; then
+            echo "from .multirotors import Iris, ZAV_v1" >> "$VEHICLES_INIT"
+            echo -e "  - vehicles/__init__.py 에 ZAV_v1 등록 완료"
+        else
+            echo -e "  - vehicles/__init__.py 에 ZAV_v1이 이미 등록되어 있습니다."
+        fi
+    fi
+
+    # (C) params.py 의 ROBOTS 딕셔너리에 ZAV_v1 USD 경로 자동 등록
+    if [ -f "$PARAMS_FILE" ]; then
+        if ! grep -q '"ZAV_v1"' "$PARAMS_FILE"; then
+            python3 - "$PARAMS_FILE" << 'PYEOF'
+import sys, pathlib
+p = pathlib.Path(sys.argv[1])
+text = p.read_text(encoding="utf-8")
+target = '"PegasusOptimized": ROBOTS_ASSETS + "/Pegasus/pegasus_optimized.usdc"'
+replacement = target + ',\n    "ZAV_v1": ROBOTS_ASSETS + "/ZAV_v1/ZAV_v1.usd"'
+if target in text:
+    text = text.replace(target, replacement, 1)
+    p.write_text(text, encoding="utf-8")
+    print("  - params.py ROBOTS 딕셔너리에 ZAV_v1 자동 등록 완료")
+else:
+    print("  - [경고] params.py 에서 ROBOTS 기본 패턴을 찾지 못했습니다.")
+PYEOF
+        else
+            echo -e "  - params.py 에 ZAV_v1이 이미 등록되어 있습니다."
+        fi
+    fi
+
+    # (D) Native Linux isaacsim_env 사용 시 pegasus.simulator 패키지 editable 설치 확인
+    if [ -f "$HOME/isaacsim_env/bin/python" ]; then
+        "$HOME/isaacsim_env/bin/python" -m pip install --editable "$PEGASUS_DIR/extensions/pegasus.simulator" --quiet || true
+        echo -e "  - isaacsim_env 가상환경에 pegasus.simulator 패키지 연동 완료"
+    fi
 else
     echo -e "${RED}  [경고] $PEGASUS_DIR 경로를 찾을 수 없습니다.${NC}"
 fi

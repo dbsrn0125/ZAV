@@ -15,6 +15,8 @@ TASKKILL_BIN="/mnt/c/Windows/System32/taskkill.exe"
 CLIP_BIN="/mnt/c/Windows/System32/clip.exe"
 
 SESSION_NAME="zav_sim"
+ISAAC_LOG="/tmp/zav_isaac_sim.log"
+rm -f "$ISAAC_LOG"
 
 # 1. 이전 잔여 프로세스 및 기존 tmux 세션 정리
 tmux kill-session -t $SESSION_NAME 2>/dev/null || true
@@ -27,7 +29,7 @@ if grep -qi microsoft /proc/version 2>/dev/null && [ -f "$TASKKILL_BIN" ]; then
 fi
 sleep 0.5
 
-# 2. 세션 종료 시 전체 프로세스 강제 회수(Trap)
+# 2. 세션 종료 시 전체 프로세스 강제 회수(Trap) 및 비정상 종료 에러 출력
 cleanup() {
     echo ""
     echo "=========================================================="
@@ -40,6 +42,12 @@ cleanup() {
     pkill -9 -f "zav_sim.py" 2>/dev/null || true
     if grep -qi microsoft /proc/version 2>/dev/null && [ -f "$TASKKILL_BIN" ]; then
         "$TASKKILL_BIN" /F /IM kit.exe 2>/dev/null || true
+    fi
+    if [ -f "$ISAAC_LOG" ] && grep -qE "Traceback|ImportError|KeyError|FileNotFoundError|ModuleNotFoundError" "$ISAAC_LOG" 2>/dev/null; then
+        echo "----------------------------------------------------------"
+        echo " ⚠️ [진단 로그] Isaac Sim (zav_sim.py) 실행 중 발생한 에러:"
+        tail -n 25 "$ISAAC_LOG"
+        echo "----------------------------------------------------------"
     fi
     echo " [ZAV Simulator] 모든 프로세스 및 포트 정리 완료!"
 }
@@ -76,12 +84,17 @@ if grep -qi microsoft /proc/version 2>/dev/null; then
     # WSL2 환경: 윈도우 Isaac Sim 실행 및 창 종료 시 전체 세션 폭파
     tmux send-keys -t $SESSION_NAME:0.1 "sleep 3 && /mnt/c/Windows/System32/cmd.exe /c 'C:/issac-sim/python.bat C:/UAVProject/PegasusSimulator/examples/zav_sim.py'; tmux kill-session -t $SESSION_NAME" C-m
 else
-    # Native Linux 환경 (팀원 PC)
+    # Native Linux 환경 (팀원 PC): 가상환경 / Standalone python.sh 자동 감지 및 에러 로그 기록
     if [ -f "$HOME/isaacsim_env/bin/python" ]; then
-        tmux send-keys -t $SESSION_NAME:0.1 "sleep 3 && $HOME/isaacsim_env/bin/python ~/PegasusSimulator/examples/zav_sim.py; tmux kill-session -t $SESSION_NAME" C-m
+        ISAAC_PY="$HOME/isaacsim_env/bin/python"
+    elif [ -f "$HOME/isaacsim/python.sh" ]; then
+        ISAAC_PY="$HOME/isaacsim/python.sh"
+    elif [ -f "$HOME/isaac-sim/python.sh" ]; then
+        ISAAC_PY="$HOME/isaac-sim/python.sh"
     else
-        tmux send-keys -t $SESSION_NAME:0.1 "sleep 3 && python3 ~/PegasusSimulator/examples/zav_sim.py; tmux kill-session -t $SESSION_NAME" C-m
+        ISAAC_PY="python3"
     fi
+    tmux send-keys -t $SESSION_NAME:0.1 "sleep 3 && $ISAAC_PY ~/PegasusSimulator/examples/zav_sim.py 2>&1 | tee $ISAAC_LOG; tmux kill-session -t $SESSION_NAME" C-m
 fi
 
 # 7. 상단 콘솔로 포커스 맞추고 대시보드 화면으로 전환
