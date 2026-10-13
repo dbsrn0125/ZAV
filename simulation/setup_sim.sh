@@ -188,11 +188,21 @@ else
     echo -e "  - ~/.bashrc에 'alias zav_sim'이 이미 존재합니다."
 fi
 
-# 4. ROS 2 패키지 다운로드 및 빌드 (px4_msgs, zav_control)
+# 4. ROS 2 패키지 다운로드 및 PX4 원본 메시지 동기화 빌드 (px4_msgs, zav_control)
 echo -e "\n${YELLOW}[4/4] ROS 2 제어 패키지 빌드 중...${NC}"
 if [ ! -d "$WS_DIR/src/px4_msgs" ]; then
-    echo -e "  - px4_msgs (release/1.14) 공식 저장소 클론 중..."
+    echo -e "  - px4_msgs 기본 저장소 클론 중..."
     git clone -b release/1.14 https://github.com/PX4/px4_msgs.git "$WS_DIR/src/px4_msgs"
+fi
+
+# 설치된 PX4-Autopilot의 원본 .msg 파일들과 100% 바이트 단위로 일치하도록 동기화
+if [ -d "$PX4_DIR/msg" ] && [ -d "$WS_DIR/src/px4_msgs/msg" ]; then
+    rm -f "$WS_DIR/src/px4_msgs/msg/"*.msg
+    cp "$PX4_DIR/msg/"*.msg "$WS_DIR/src/px4_msgs/msg/"
+    if [ -d "$PX4_DIR/msg/versioned" ]; then
+        cp "$PX4_DIR/msg/versioned/"*.msg "$WS_DIR/src/px4_msgs/msg/"
+    fi
+    echo -e "  - PX4-Autopilot 원본 .msg 정의를 px4_msgs에 100% 동기화 완료"
 fi
 
 if [ -d "$WS_DIR/src/zav_control" ]; then
