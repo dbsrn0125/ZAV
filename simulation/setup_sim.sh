@@ -56,8 +56,8 @@ if [ -d "$PEGASUS_DIR" ]; then
     mkdir -p "$VEHICLE_DIR" "$ASSET_DIR" "$EXAMPLE_DIR"
     cp "$SCRIPT_DIR/pegasus/zav_v1.py" "$VEHICLE_DIR/"
     cp "$SCRIPT_DIR/pegasus/assets/ZAV_v1/ZAV_v1.usd" "$ASSET_DIR/"
-    cp "$SCRIPT_DIR/pegasus/run_zav_plane.py" "$EXAMPLE_DIR/"
-    echo -e "  - zav_v1.py (공력 모델), ZAV_v1.usd (3D 모델), run_zav_plane.py 복사 완료"
+    cp "$SCRIPT_DIR/pegasus/zav_sim.py" "$EXAMPLE_DIR/"
+    echo -e "  - zav_v1.py (공력 모델), ZAV_v1.usd (3D 모델), zav_sim.py 복사 완료"
 else
     echo -e "${RED}  [경고] $PEGASUS_DIR 경로를 찾을 수 없습니다.${NC}"
 fi

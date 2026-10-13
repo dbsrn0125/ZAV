@@ -52,7 +52,7 @@ cd ~/zenith_ws/simulation
 ```
 > **자동 수행 항목**:
 > - PX4 에어프레임(`10020_isaac_zav`) 복사 및 `CMakeLists.txt` 등록
-> - Pegasus 기체 공력 모델(`zav_v1.py`), 3D 로봇 USD 모델(`ZAV_v1.usd`), 런처(`run_zav_plane.py`) 복사
+> - Pegasus 기체 공력 모델(`zav_v1.py`), 3D 로봇 USD 모델(`ZAV_v1.usd`), 런처(`zav_sim.py`) 복사
 > - `~/.bashrc`에 단축어 `zav_sim` 등록
 > - ROS 2 `px4_msgs`, `zav_control` 패키지 자동 빌드
 

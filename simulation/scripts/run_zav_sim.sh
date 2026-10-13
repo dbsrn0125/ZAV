@@ -21,7 +21,7 @@ tmux kill-session -t $SESSION_NAME 2>/dev/null || true
 pkill -9 -f MicroXRCEAgent 2>/dev/null || true
 pkill -9 -f px4_sitl 2>/dev/null || true
 pkill -9 -f "bin/px4" 2>/dev/null || true
-pkill -9 -f "run_zav_plane.py" 2>/dev/null || true
+pkill -9 -f "zav_sim.py" 2>/dev/null || true
 if grep -qi microsoft /proc/version 2>/dev/null && [ -f "$TASKKILL_BIN" ]; then
     "$TASKKILL_BIN" /F /IM kit.exe 2>/dev/null || true
 fi
@@ -37,7 +37,7 @@ cleanup() {
     pkill -9 -f MicroXRCEAgent 2>/dev/null || true
     pkill -9 -f px4_sitl 2>/dev/null || true
     pkill -9 -f "bin/px4" 2>/dev/null || true
-    pkill -9 -f "run_zav_plane.py" 2>/dev/null || true
+    pkill -9 -f "zav_sim.py" 2>/dev/null || true
     if grep -qi microsoft /proc/version 2>/dev/null && [ -f "$TASKKILL_BIN" ]; then
         "$TASKKILL_BIN" /F /IM kit.exe 2>/dev/null || true
     fi
@@ -74,13 +74,13 @@ tmux select-pane -t $SESSION_NAME:0.1 -T "🟢 [하단] Pegasus / Isaac Sim 파�
 
 if grep -qi microsoft /proc/version 2>/dev/null; then
     # WSL2 환경: 윈도우 Isaac Sim 실행 및 창 종료 시 전체 세션 폭파
-    tmux send-keys -t $SESSION_NAME:0.1 "sleep 3 && /mnt/c/Windows/System32/cmd.exe /c 'C:/issac-sim/python.bat C:/UAVProject/PegasusSimulator/examples/run_zav_plane.py'; tmux kill-session -t $SESSION_NAME" C-m
+    tmux send-keys -t $SESSION_NAME:0.1 "sleep 3 && /mnt/c/Windows/System32/cmd.exe /c 'C:/issac-sim/python.bat C:/UAVProject/PegasusSimulator/examples/zav_sim.py'; tmux kill-session -t $SESSION_NAME" C-m
 else
     # Native Linux 환경 (팀원 PC)
     if [ -f "$HOME/isaacsim_env/bin/python" ]; then
-        tmux send-keys -t $SESSION_NAME:0.1 "sleep 3 && $HOME/isaacsim_env/bin/python ~/PegasusSimulator/examples/run_zav_plane.py; tmux kill-session -t $SESSION_NAME" C-m
+        tmux send-keys -t $SESSION_NAME:0.1 "sleep 3 && $HOME/isaacsim_env/bin/python ~/PegasusSimulator/examples/zav_sim.py; tmux kill-session -t $SESSION_NAME" C-m
     else
-        tmux send-keys -t $SESSION_NAME:0.1 "sleep 3 && python3 ~/PegasusSimulator/examples/run_zav_plane.py; tmux kill-session -t $SESSION_NAME" C-m
+        tmux send-keys -t $SESSION_NAME:0.1 "sleep 3 && python3 ~/PegasusSimulator/examples/zav_sim.py; tmux kill-session -t $SESSION_NAME" C-m
     fi
 fi
 
