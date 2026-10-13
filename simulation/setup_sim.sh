@@ -2,8 +2,9 @@
 # ==============================================================================
 # [Zenith Aerial Vehicle] ZAV Simulation 자동 환경 구축 스크립트
 #
-# 팀원(Ubuntu/WSL2) 환경에서 PX4 SITL 에어프레임 등록, Pegasus 기체 모델 배치,
-# params.py / __init__.py 자동 등록, 런처 등록 및 ROS 2 제어기 빌드를 수행합니다.
+# 팀원(Ubuntu/WSL2) 환경에서 PX4 SITL 에어프레임/CMake 타겟(isaac_zav) 등록,
+# Pegasus 기체 모델 배치, params.py / __init__.py 자동 등록, 런처 등록 및
+# ROS 2 제어기 빌드를 한 번에 수행합니다.
 # ==============================================================================
 
 set -e
@@ -25,22 +26,57 @@ WS_DIR="$(dirname "$SCRIPT_DIR")"
 PX4_DIR="${PX4_DIR:-$HOME/PX4-Autopilot}"
 PEGASUS_DIR="${PEGASUS_DIR:-$HOME/PegasusSimulator}"
 
-# 1. PX4-Autopilot 에어프레임 설정
-echo -e "\n${YELLOW}[1/4] PX4 에어프레임 설정 중...${NC}"
+# 1. PX4-Autopilot 에어프레임 및 CMake 타겟(isaac_zav) 설정
+echo -e "\n${YELLOW}[1/4] PX4 에어프레임 및 CMake 타겟(isaac_zav) 설정 중...${NC}"
 if [ -d "$PX4_DIR" ]; then
     AIRFRAME_DIR="$PX4_DIR/ROMFS/px4fmu_common/init.d-posix/airframes"
     mkdir -p "$AIRFRAME_DIR"
     cp "$SCRIPT_DIR/px4/10020_isaac_zav" "$AIRFRAME_DIR/"
     echo -e "  - 10020_isaac_zav 에어프레임 복사 완료: $AIRFRAME_DIR"
 
+    # (A) ROMFS airframes/CMakeLists.txt 에 10020_isaac_zav 등록
     CMAKE_FILE="$AIRFRAME_DIR/CMakeLists.txt"
     if [ -f "$CMAKE_FILE" ]; then
         if ! grep -q "10020_isaac_zav" "$CMAKE_FILE"; then
-            sed -i '/px4_add_airframe(/a \\t10020_isaac_zav' "$CMAKE_FILE"
-            echo -e "  - CMakeLists.txt 에어프레임 타겟 등록 완료"
+            if grep -q "10016_none_iris" "$CMAKE_FILE"; then
+                sed -i '/10016_none_iris/a \\t10020_isaac_zav' "$CMAKE_FILE"
+            else
+                sed -i '/px4_add_romfs_files(/a \\t10020_isaac_zav' "$CMAKE_FILE"
+            fi
+            echo -e "  - airframes/CMakeLists.txt 에 10020_isaac_zav 등록 완료"
         else
-            echo -e "  - CMakeLists.txt에 이미 등록되어 있습니다."
+            echo -e "  - airframes/CMakeLists.txt 에 이미 등록되어 있습니다."
         fi
+    fi
+
+    # (B) simulator_mavlink/CMakeLists.txt 에 'isaac_zav' 빌드/실행 타겟 등록
+    MAVLINK_CMAKE="$PX4_DIR/src/modules/simulation/simulator_mavlink/CMakeLists.txt"
+    if [ -f "$MAVLINK_CMAKE" ]; then
+        if ! grep -q "add_custom_target(isaac_zav" "$MAVLINK_CMAKE"; then
+            cat << 'CMAKEEOF' >> "$MAVLINK_CMAKE"
+
+# isaac_zav (ZAV Custom Quadcopter for Isaac Sim / Pegasus)
+add_custom_target(isaac_zav
+	COMMAND ${CMAKE_COMMAND} -E env PX4_SYS_AUTOSTART=10020 $<TARGET_FILE:px4>
+	WORKING_DIRECTORY ${SITL_WORKING_DIR}
+	USES_TERMINAL
+	DEPENDS
+		px4
+		${PX4_SOURCE_DIR}/ROMFS/px4fmu_common/init.d-posix/airframes/10020_isaac_zav
+	COMMENT "launching px4 isaac_zav (SYS_AUTOSTART=10020)"
+)
+CMAKEEOF
+            echo -e "  - simulator_mavlink/CMakeLists.txt 에 'isaac_zav' 타겟 등록 완료"
+        else
+            echo -e "  - simulator_mavlink/CMakeLists.txt 에 'isaac_zav' 타겟이 이미 등록되어 있습니다."
+        fi
+    fi
+
+    # (C) 기존 PX4 빌드 캐시가 존재할 경우 CMake 재구성하여 ninja 타겟 즉시 반영
+    if [ -f "$PX4_DIR/build/px4_sitl_default/CMakeCache.txt" ]; then
+        echo -e "  - 기존 PX4 빌드 디렉토리에 isaac_zav 타겟 갱신 중..."
+        cmake "$PX4_DIR/build/px4_sitl_default" > /dev/null
+        echo -e "  - PX4 Ninja 빌드 타겟(isaac_zav) 갱신 완료!"
     fi
 else
     echo -e "${RED}  [경고] $PX4_DIR 경로를 찾을 수 없습니다.${NC}"
