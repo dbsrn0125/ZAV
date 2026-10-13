@@ -29,8 +29,17 @@ import omni.timeline
 from omni.isaac.core.world import World
 import omni.isaac.core.utils.prims as prim_utils
 
+import os
+import sys
 import numpy as np
 from scipy.spatial.transform import Rotation
+
+# Pegasus Simulator 확장 모듈 경로를 sys.path에 자동 등록 (가상환경 및 미설치 환경 완벽 호환)
+_pegasus_ext_path = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "extensions", "pegasus.simulator")
+)
+if _pegasus_ext_path not in sys.path:
+    sys.path.insert(0, _pegasus_ext_path)
 
 # Pegasus Simulator 핵심 API
 from pegasus.simulator.logic.interface.pegasus_interface import PegasusInterface

@@ -144,11 +144,25 @@ PYEOF
         fi
     fi
 
-    # (D) Native Linux isaacsim_env 사용 시 pegasus.simulator 패키지 editable 설치 확인
-    if [ -f "$HOME/isaacsim_env/bin/python" ]; then
-        "$HOME/isaacsim_env/bin/python" -m pip install --editable "$PEGASUS_DIR/extensions/pegasus.simulator" --quiet || true
-        echo -e "  - isaacsim_env 가상환경에 pegasus.simulator 패키지 연동 완료"
-    fi
+    # (D) Native Linux Isaac Sim 가상환경(isaac_env, isaacsim_env 등)에 필수 패키지 및 pegasus 경로 등록
+    for ENV_PY in "${VIRTUAL_ENV:+$VIRTUAL_ENV/bin/python}" "$HOME/isaac_env/bin/python" "$HOME/isaacsim_env/bin/python"; do
+        if [ -n "$ENV_PY" ] && [ -f "$ENV_PY" ]; then
+            echo -e "  - Isaac Sim 파이썬 환경 감지 ($ENV_PY): 필수 의존성(pymavlink, scipy, pyyaml) 및 pegasus 경로 등록 중..."
+            "$ENV_PY" -m pip install --quiet numpy pymavlink scipy pyyaml || true
+            "$ENV_PY" - "$PEGASUS_DIR/extensions/pegasus.simulator" << 'PYEOF'
+import sys, site, os
+ext_path = sys.argv[1]
+for sp in site.getsitepackages():
+    if os.path.isdir(sp):
+        pth_file = os.path.join(sp, "pegasus_simulator.pth")
+        with open(pth_file, "w", encoding="utf-8") as f:
+            f.write(ext_path + "\n")
+        break
+PYEOF
+            echo -e "  - $ENV_PY 에 pegasus.simulator 모듈 경로(.pth) 등록 완료!"
+            break
+        fi
+    done
 else
     echo -e "${RED}  [경고] $PEGASUS_DIR 경로를 찾을 수 없습니다.${NC}"
 fi

@@ -84,8 +84,12 @@ if grep -qi microsoft /proc/version 2>/dev/null; then
     # WSL2 환경: 윈도우 Isaac Sim 실행 및 창 종료 시 전체 세션 폭파
     tmux send-keys -t $SESSION_NAME:0.1 "sleep 3 && /mnt/c/Windows/System32/cmd.exe /c 'C:/issac-sim/python.bat C:/UAVProject/PegasusSimulator/examples/zav_sim.py'; tmux kill-session -t $SESSION_NAME" C-m
 else
-    # Native Linux 환경 (팀원 PC): 가상환경 / Standalone python.sh 자동 감지 및 에러 로그 기록
-    if [ -f "$HOME/isaacsim_env/bin/python" ]; then
+    # Native Linux 환경 (팀원 PC): 가상환경(VIRTUAL_ENV / isaac_env / isaacsim_env) 및 Standalone python.sh 자동 감지
+    if [ -n "$VIRTUAL_ENV" ] && [ -f "$VIRTUAL_ENV/bin/python" ]; then
+        ISAAC_PY="$VIRTUAL_ENV/bin/python"
+    elif [ -f "$HOME/isaac_env/bin/python" ]; then
+        ISAAC_PY="$HOME/isaac_env/bin/python"
+    elif [ -f "$HOME/isaacsim_env/bin/python" ]; then
         ISAAC_PY="$HOME/isaacsim_env/bin/python"
     elif [ -f "$HOME/isaacsim/python.sh" ]; then
         ISAAC_PY="$HOME/isaacsim/python.sh"
