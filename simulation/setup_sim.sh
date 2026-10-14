@@ -195,7 +195,8 @@ fi
 # 3. 2분할 대시보드 런처 및 단축어 등록
 echo -e "\n${YELLOW}[3/4] 2분할 대시보드 런처 및 bashrc 단축어 등록...${NC}"
 cp "$SCRIPT_DIR/scripts/run_zav_sim.sh" "$HOME/run_zav_sim.sh"
-chmod +x "$HOME/run_zav_sim.sh"
+cp "$SCRIPT_DIR/scripts/run_isaac_sim.sh" "$HOME/run_isaac_sim.sh"
+chmod +x "$HOME/run_zav_sim.sh" "$HOME/run_isaac_sim.sh"
 
 if ! grep -q "alias zav_sim=" "$HOME/.bashrc"; then
     echo "alias zav_sim='$HOME/run_zav_sim.sh'" >> "$HOME/.bashrc"
