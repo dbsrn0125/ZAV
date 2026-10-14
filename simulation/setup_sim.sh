@@ -172,6 +172,22 @@ PYEOF
             break
         fi
     done
+
+    # (E) Windows + WSL2 환경: 윈도우 Isaac Sim 감지 시 pip 의존성(pymavlink, scipy, pyyaml) 자동 동기화 설치
+    if grep -qi microsoft /proc/version 2>/dev/null && [ -f "/mnt/c/Windows/System32/cmd.exe" ]; then
+        WIN_ISAAC_BAT=""
+        for CANDIDATE in "/mnt/c/isaac-sim/python.bat" "/mnt/c/issac-sim/python.bat" /mnt/c/Users/*/AppData/Local/ov/pkg/isaac*sim*/python.bat; do
+            if [ -f "$CANDIDATE" ]; then
+                WIN_ISAAC_BAT=$(wslpath -w "$CANDIDATE")
+                break
+            fi
+        done
+        if [ -n "$WIN_ISAAC_BAT" ]; then
+            echo -e "  - Windows Isaac Sim 감지 ($WIN_ISAAC_BAT): 필수 패키지(pymavlink, scipy, pyyaml) 동기화 설치 중..."
+            /mnt/c/Windows/System32/cmd.exe /c call "$WIN_ISAAC_BAT" -m pip install --quiet pymavlink scipy pyyaml || true
+            echo -e "  - Windows Isaac Sim 필수 의존성(pymavlink, scipy, pyyaml) 설치 완료!"
+        fi
+    fi
 else
     echo -e "${RED}  [경고] $PEGASUS_DIR 경로를 찾을 수 없습니다.${NC}"
 fi
