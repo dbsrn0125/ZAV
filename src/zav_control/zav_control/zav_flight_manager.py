@@ -367,8 +367,12 @@ class ZAVFlightManager(Node):
     def set_arm_toggle(self):
         new_arm = not self.is_armed
         self.send_vehicle_command(VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM, 1.0 if new_arm else 0.0)
-        action_name = "시동 켜기(ARM)" if new_arm else "시동 끄기(DISARM)"
-        print(f"\r\n👉 [명령 전송] {action_name} 요청 완료!\r\n")
+        if new_arm:
+            # 시동을 걸 때 PX4를 OFFBOARD 모드(1.0, 6.0)로 즉시 전환하여 W키 이륙 및 조종 보장
+            time.sleep(0.05)
+            self.send_vehicle_command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 1.0, 6.0)
+        action_name = "시동 켜기(ARM) & OFFBOARD 모드 진입" if new_arm else "시동 끄기(DISARM)"
+        print(f"\r\n👉 [명령 전송] {action_name} 완료!\r\n")
 
     def set_mode_manual(self):
         self.flight_mode = "MANUAL_POS"
@@ -463,6 +467,9 @@ class ZAVFlightManager(Node):
         # 3. 수직 스로틀 축 (W / S) -> Body Z (상승: +vz, 하강: -vz)
         if (mask & KEY_W) and not (mask & KEY_S):
             self.target_vz_body = self.max_speed_z_up
+            # 시동 상태에서 오프보드가 아니면 W를 누르는 순간 즉시 오프보드로 전환
+            if self.is_armed and self.nav_state != 14:
+                self.send_vehicle_command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 1.0, 6.0)
         elif (mask & KEY_S) and not (mask & KEY_W):
             self.target_vz_body = -self.max_speed_z_dn
         else:
