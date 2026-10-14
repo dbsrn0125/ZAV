@@ -323,6 +323,7 @@ class ZAVFlightManager(Node):
         self.last_loop_time = time.time()
         self.last_print_time = time.time()
         self.was_moving = False
+        self.was_turning_yaw = False
 
         # 50Hz (20ms) 고속 정주기 제어 루프 타이머
         self.timer = self.create_timer(0.02, self._control_loop)
@@ -608,13 +609,15 @@ class ZAVFlightManager(Node):
 
             self.traj_setpoint_pub.publish(sp)
 
-        # [수동 조종 모드]: PX4 순정 고도/위치 제어기 연동 (teleop_keyboard.py 검증 로직 100% 복원)
+        # [수동 조종 모드]: PX4 순정 제어기 연동 (teleop_keyboard.py 헤딩 추종 100% 복원)
         else:
             self._publish_offboard_heartbeat(velocity_mode=True)
 
-            # 1. 스틱 선형 가감속 계산 (누르면 가속, 떼면 즉시 0 복귀, 반대타 즉각 반응)
-            self.out_vx_body = ramp_stick_value(self.out_vx_body, self.target_vx_body, self.stick_push_xy, self.stick_return_xy, dt)
-            self.out_vy_body = ramp_stick_value(self.out_vy_body, self.target_vy_body, self.stick_push_xy, self.stick_return_xy, dt)
+            # 1. 스틱 선형 가감속 계산: 1번(Position)은 칼제동(14.0), 2번(Altitude)은 관성비행(2.0)
+            current_decel_xy = 2.0 if self.flight_mode == "ALTCTL" else self.stick_return_xy
+
+            self.out_vx_body = ramp_stick_value(self.out_vx_body, self.target_vx_body, self.stick_push_xy, current_decel_xy, dt)
+            self.out_vy_body = ramp_stick_value(self.out_vy_body, self.target_vy_body, self.stick_push_xy, current_decel_xy, dt)
             self.out_vz_body = ramp_stick_value(self.out_vz_body, self.target_vz_body, self.stick_push_z, self.stick_return_z, dt)
             self.out_yaw_rate = ramp_stick_value(self.out_yaw_rate, self.target_yaw_rate, self.stick_push_yaw, self.stick_return_yaw, dt)
 
@@ -628,39 +631,44 @@ class ZAVFlightManager(Node):
                 vx_eff = self.out_vx_body
                 vy_eff = self.out_vy_body
 
-            # 실시간 속도 상태 출력 (조작 중에만 실시간 스틱 속도 출력!)
+            # 실시간 속도 상태 출력
+            mode_tag = "POS" if self.flight_mode == "MANUAL_POS" else "ALT"
             is_moving_now = (vel_xy_norm > 0.02) or (abs(self.out_vz_body) > 0.02) or (abs(self.out_yaw_rate) > 0.02)
             if (is_moving_now or self.was_moving) and (now - self.last_print_time > 0.08):
                 self.last_print_time = now
                 self.was_moving = is_moving_now
                 print(
-                    f"\r🎮 [스틱] 수평:{vel_xy_norm:4.1f}m/s (전후:{vx_eff:+5.1f}, 좌우:{vy_eff:+5.1f}) | "
+                    f"\r🎮 [{mode_tag}-스틱] 수평:{vel_xy_norm:4.1f}m/s (전후:{vx_eff:+5.1f}, 좌우:{vy_eff:+5.1f}) | "
                     f"수직:{self.out_vz_body:+4.1f}m/s | "
                     f"Yaw:{math.degrees(self.out_yaw_rate):+5.1f}°/s (헤딩:{math.degrees(self.current_yaw):+6.1f}°)   ",
                     end='', flush=True
                 )
 
-            # 2. 3차원 좌표계 회전 변환 (기존 검증된 teleop_keyboard.py 수식으로 100% 원복)
-            psi = self.current_yaw
+            # 2. Yaw 회전 적분 및 헤딩 고정 처리 (teleop_keyboard.py 원본 100% 복원!)
+            # 회전 키를 누르고 있을 때는 목표 헤딩을 현재 헤딩보다 0.15초 앞선 방향으로 실시간 추종하여
+            # 전진하면서 Yaw를 돌릴 때 기수가 돌아가는 방향으로 전진 방향이 완벽하게 회전 추종!
+            if abs(self.out_yaw_rate) > 0.01:
+                self.was_turning_yaw = True
+                self.target_yaw = wrap_pi(self.current_yaw + self.out_yaw_rate * 0.15)
+            else:
+                if self.was_turning_yaw:
+                    self.target_yaw = wrap_pi(self.current_yaw)
+                    self.was_turning_yaw = False
+
+            # 3. 현재 기체 실시간 헤딩 기준 Body(FLU) -> Inertial(NED) 속도 변환
+            psi = self.current_yaw if self.was_turning_yaw else (self.target_yaw if self.yaw_initialized else self.current_yaw)
             vn = vx_eff * math.cos(psi) + vy_eff * math.sin(psi)
             ve = vx_eff * math.sin(psi) - vy_eff * math.cos(psi)
             vd = -self.out_vz_body  # 상승(+vz)은 NED에서 음수(-vd)
 
-            # 3. PX4 TrajectorySetpoint 생성 및 퍼블리시
+            # 4. PX4 TrajectorySetpoint 생성 및 퍼블리시
             sp = TrajectorySetpoint()
             sp.timestamp = self.get_clock().now().nanoseconds // 1000
             sp.position = [float('nan'), float('nan'), float('nan')]
             sp.velocity = [float(vn), float(ve), float(vd)]
             sp.acceleration = [float('nan'), float('nan'), float('nan')]
-
-            # 회전 키를 누르고 있을 때는 yawspeed 지정, 뗐을 때는 헤딩 잠금
-            if abs(self.out_yaw_rate) > 0.02:
-                sp.yaw = float('nan')
-                sp.yawspeed = float(self.out_yaw_rate)
-                self.target_yaw = self.current_yaw
-            else:
-                sp.yaw = float(self.target_yaw) if self.yaw_initialized else float('nan')
-                sp.yawspeed = float('nan')
+            sp.yaw = float('nan') if self.was_turning_yaw else (float(self.target_yaw) if self.yaw_initialized else float('nan'))
+            sp.yawspeed = float(self.out_yaw_rate)
 
             self.traj_setpoint_pub.publish(sp)
 
