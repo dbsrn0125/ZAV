@@ -608,63 +608,11 @@ class ZAVFlightManager(Node):
 
             self.traj_setpoint_pub.publish(sp)
 
-        # [케이스 D] 모드 2: ALTCTL (진짜 순정 고도 모드: 위치 제어기 완전 Bypass, VehicleAttitudeSetpoint 직접 제어!)
-        elif self.flight_mode == "ALTCTL":
-            self._publish_offboard_heartbeat(attitude_mode=True)
-
-            # 1. 스틱 선형 가감속 계산 (반대타 칼같이 즉각 반응)
-            self.out_vx_body = ramp_stick_value(self.out_vx_body, self.target_vx_body, self.stick_push_xy, self.stick_return_xy, dt)
-            self.out_vy_body = ramp_stick_value(self.out_vy_body, self.target_vy_body, self.stick_push_xy, self.stick_return_xy, dt)
-            self.out_vz_body = ramp_stick_value(self.out_vz_body, self.target_vz_body, self.stick_push_z, self.stick_return_z, dt)
-            self.out_yaw_rate = ramp_stick_value(self.out_yaw_rate, self.target_yaw_rate, self.stick_push_yaw, self.stick_return_yaw, dt)
-
-            # 2. 키 입력을 순수 기체 틸트 각도(Roll/Pitch)로 직접 매핑
-            # 전진(+vx): 기수를 앞으로 숙임 (pitch < 0)
-            # 후진(-vx): 기수를 뒤로 젖힘 (pitch > 0)
-            # 좌측(+vy): 기체를 좌측으로 기울임 (roll < 0)
-            # 우측(-vy): 기체를 우측으로 기울임 (roll > 0)
-            pitch_cmd = - (self.out_vx_body / self.max_speed_xy) * self.max_tilt_angle
-            roll_cmd  = - (self.out_vy_body / self.max_speed_xy) * self.max_tilt_angle
-
-            # Yaw 회전 적분
-            if abs(self.out_yaw_rate) > 0.01:
-                self.target_yaw = wrap_pi(self.target_yaw + self.out_yaw_rate * dt)
-
-            # 3. 오일러 각도 -> 쿼터니언 변환
-            q_d = euler_to_quaternion(roll_cmd, pitch_cmd, self.target_yaw)
-
-            # 4. 수직 추력 제어 (기본 호버링 추력 유지, W/S 키로 상승/하강 추력 가감)
-            if self.out_vz_body > 0.1:
-                thrust = self.hover_thrust + 0.15  # W 누르면 상승
-            elif self.out_vz_body < -0.1:
-                thrust = max(0.10, self.hover_thrust - 0.12)  # S 누르면 하강
-            else:
-                thrust = self.hover_thrust  # 손 떼면 호버링 추력
-
-            # 5. VehicleAttitudeSetpoint 메시지 생성 및 퍼블리시
-            att_sp = VehicleAttitudeSetpoint()
-            att_sp.timestamp = self.get_clock().now().nanoseconds // 1000
-            att_sp.q_d = q_d
-            att_sp.thrust_body = [0.0, 0.0, float(-thrust)]
-            att_sp.yaw_sp_move_rate = float(self.out_yaw_rate)
-            self.attitude_setpoint_pub.publish(att_sp)
-
-            # 실시간 자세 상태 출력 (조작 중에만 출력)
-            is_moving_now = (abs(roll_cmd) > 0.01) or (abs(pitch_cmd) > 0.01) or (abs(self.out_vz_body) > 0.02) or (abs(self.out_yaw_rate) > 0.02)
-            if (is_moving_now or self.was_moving) and (now - self.last_print_time > 0.08):
-                self.last_print_time = now
-                self.was_moving = is_moving_now
-                print(
-                    f"\r🎈 [ALT-자세] Roll:{math.degrees(roll_cmd):+5.1f}° | Pitch:{math.degrees(pitch_cmd):+5.1f}° | "
-                    f"추력:{thrust:4.2f} | 헤딩:{math.degrees(self.current_yaw):+6.1f}°   ",
-                    end='', flush=True
-                )
-
-        # [케이스 E] 모드 1: MANUAL_POS (수동 위치 모드: TrajectorySetpoint 속도/위치 제어)
+        # [수동 조종 모드]: PX4 순정 고도/위치 제어기 연동 (teleop_keyboard.py 검증 로직 100% 복원)
         else:
             self._publish_offboard_heartbeat(velocity_mode=True)
 
-            # 1. 스틱 선형 가감속 계산
+            # 1. 스틱 선형 가감속 계산 (누르면 가속, 떼면 즉시 0 복귀, 반대타 즉각 반응)
             self.out_vx_body = ramp_stick_value(self.out_vx_body, self.target_vx_body, self.stick_push_xy, self.stick_return_xy, dt)
             self.out_vy_body = ramp_stick_value(self.out_vy_body, self.target_vy_body, self.stick_push_xy, self.stick_return_xy, dt)
             self.out_vz_body = ramp_stick_value(self.out_vz_body, self.target_vz_body, self.stick_push_z, self.stick_return_z, dt)
@@ -686,7 +634,7 @@ class ZAVFlightManager(Node):
                 self.last_print_time = now
                 self.was_moving = is_moving_now
                 print(
-                    f"\r🎮 [POS-속도] 수평:{vel_xy_norm:4.1f}m/s (전후:{vx_eff:+5.1f}, 좌우:{vy_eff:+5.1f}) | "
+                    f"\r🎮 [스틱] 수평:{vel_xy_norm:4.1f}m/s (전후:{vx_eff:+5.1f}, 좌우:{vy_eff:+5.1f}) | "
                     f"수직:{self.out_vz_body:+4.1f}m/s | "
                     f"Yaw:{math.degrees(self.out_yaw_rate):+5.1f}°/s (헤딩:{math.degrees(self.current_yaw):+6.1f}°)   ",
                     end='', flush=True
@@ -715,6 +663,7 @@ class ZAVFlightManager(Node):
                 sp.yawspeed = float('nan')
 
             self.traj_setpoint_pub.publish(sp)
+
 
     def destroy_node(self):
         self.multi_key.stop()
