@@ -263,22 +263,19 @@ class ZAVFlightManager(Node):
         self.takeoff_hover_x = 0.0
         self.takeoff_hover_y = 0.0
 
-        # 5. 가상 RC 스틱 사양 (Stick Dynamics Limits)
-        self.max_speed_xy = 8.0        # 최대 수평 비행 속도 (m/s)
-        self.max_speed_z_up = 3.0      # 최대 상승 속도 (m/s)
-        self.max_speed_z_dn = 1.5      # 최대 하강 속도 (m/s)
-        self.max_yaw_rate = 2.0        # 최대 회전 각속도 (rad/s)
+        # 5. 가상 RC 스틱 사양 (기존 teleop_keyboard.py 스펙과 100% 동일하게 일치)
+        self.max_speed_xy = 12.0       # 최대 수평 속도: 12.0 m/s
+        self.max_speed_z_up = 3.0      # 최대 상승 속도: 3.0 m/s
+        self.max_speed_z_dn = 1.5      # 최대 하강 속도: 1.5 m/s
+        self.max_yaw_rate = 2.5        # 최대 회전 각속도: 2.5 rad/s
 
-        # 스틱 모사 가속도:
-        # 손가락으로 스틱을 미는 속도 (Push rate)
-        self.stick_push_xy = 5.0       # m/s^2 (약 0.3초만에 최고속도 도달)
-        self.stick_push_z = 2.5        # m/s^2
-        self.stick_push_yaw = 3.0      # rad/s^2
+        self.stick_push_xy = 5.0       # 선형 가속율: 5.0 m/s^2
+        self.stick_push_z = 2.5        # 수직 가속율: 2.5 m/s^2
+        self.stick_push_yaw = 2.5      # 회전 가속율: 2.5 rad/s^2
 
-        # 손을 뗐을 때 센터링 스프링이 스틱을 중앙(0)으로 당기는 속도 (Spring Return rate)
-        self.stick_return_xy = 7.0     # m/s^2 (약 0.15~0.2초만에 스틱 0 복귀)
-        self.stick_return_z = 4.0      # m/s^2
-        self.stick_return_yaw = 5.0    # rad/s^2
+        self.stick_return_xy = 14.0    # 선형 감속율: 14.0 m/s^2 (손 떼면 즉시 0 복귀)
+        self.stick_return_z = 6.0      # 수직 감속율: 6.0 m/s^2
+        self.stick_return_yaw = 8.0    # 회전 감속율: 8.0 rad/s^2
 
         # 실시간 가상 스틱 목표치 (키를 누르면 max_speed, 떼면 0.0)
         self.target_vx_body = 0.0
@@ -303,6 +300,7 @@ class ZAVFlightManager(Node):
         self.space_latched = False
         self.last_loop_time = time.time()
         self.last_print_time = time.time()
+        self.was_moving = False
 
         # 50Hz (20ms) 고속 정주기 제어 루프 타이머
         self.timer = self.create_timer(0.02, self._control_loop)
@@ -489,11 +487,11 @@ class ZAVFlightManager(Node):
         else:
             self.target_vz_body = 0.0
 
-        # 4. Yaw 회전 축 (A / D) -> CCW 좌회전: +yaw_rate, CW 우회전: -yaw_rate
+        # 4. Yaw 회전 축 (A / D) -> 기존 teleop_keyboard.py와 100% 동일하게 복원
         if (mask & KEY_A) and not (mask & KEY_D):
-            self.target_yaw_rate = self.max_yaw_rate
-        elif (mask & KEY_D) and not (mask & KEY_A):
             self.target_yaw_rate = -self.max_yaw_rate
+        elif (mask & KEY_D) and not (mask & KEY_A):
+            self.target_yaw_rate = self.max_yaw_rate
         else:
             self.target_yaw_rate = 0.0
 
@@ -592,13 +590,9 @@ class ZAVFlightManager(Node):
         else:
             self._publish_offboard_heartbeat(velocity_mode=True, body_rate_mode=False)
 
-            # 1. 스틱 스프링 복귀 필터 적용 (Input Shaping)
-            # 모드 1(MANUAL_POS): return_rate=10.0 m/s^2 (키 떼면 즉시 0 복귀 -> PX4 제동 및 호버링)
-            # 모드 2(ALTCTL): return_rate=1.8 m/s^2 (공기 저항 감쇠로 자연스럽게 미끄러짐 + 반대타 즉시 반영)
-            cur_return_xy = 1.8 if self.flight_mode == "ALTCTL" else 10.0
-
-            self.out_vx_body = ramp_stick_value(self.out_vx_body, self.target_vx_body, self.stick_push_xy, cur_return_xy, dt)
-            self.out_vy_body = ramp_stick_value(self.out_vy_body, self.target_vy_body, self.stick_push_xy, cur_return_xy, dt)
+            # 1. 스틱 선형 가감속 계산 (인위적인 가짜 감속 완전 제거, teleop_keyboard.py와 동일하게 복원)
+            self.out_vx_body = ramp_stick_value(self.out_vx_body, self.target_vx_body, self.stick_push_xy, self.stick_return_xy, dt)
+            self.out_vy_body = ramp_stick_value(self.out_vy_body, self.target_vy_body, self.stick_push_xy, self.stick_return_xy, dt)
             self.out_vz_body = ramp_stick_value(self.out_vz_body, self.target_vz_body, self.stick_push_z, self.stick_return_z, dt)
             self.out_yaw_rate = ramp_stick_value(self.out_yaw_rate, self.target_yaw_rate, self.stick_push_yaw, self.stick_return_yaw, dt)
 
@@ -611,6 +605,18 @@ class ZAVFlightManager(Node):
             else:
                 vx_eff = self.out_vx_body
                 vy_eff = self.out_vy_body
+
+            # 실시간 속도 상태 출력 (teleop_keyboard.py 원래 방식 복원: 조작 중에만 실시간 스틱 속도 출력!)
+            is_moving_now = (vel_xy_norm > 0.02) or (abs(self.out_vz_body) > 0.02) or (abs(self.out_yaw_rate) > 0.02)
+            if (is_moving_now or self.was_moving) and (now - self.last_print_time > 0.08):
+                self.last_print_time = now
+                self.was_moving = is_moving_now
+                print(
+                    f"\r🎮 [스틱] 수평:{vel_xy_norm:4.1f}m/s (전후:{vx_eff:+5.1f}, 좌우:{vy_eff:+5.1f}) | "
+                    f"수직:{self.out_vz_body:+4.1f}m/s | "
+                    f"Yaw:{math.degrees(self.out_yaw_rate):+5.1f}°/s (헤딩:{math.degrees(self.current_yaw):+6.1f}°)   ",
+                    end='', flush=True
+                )
 
             # 2. 3차원 좌표계 회전 변환 (기존 검증된 teleop_keyboard.py 수식으로 100% 원복)
             # 수식:
@@ -639,20 +645,6 @@ class ZAVFlightManager(Node):
                 sp.yawspeed = float('nan')
 
             self.traj_setpoint_pub.publish(sp)
-
-        # 4. 실시간 상태 단일 라인 갱신 출력 (\033[K)
-        if now - self.last_print_time > 0.09:
-            self.last_print_time = now
-            arm_str = "🟢 시동(Armed)" if self.is_armed else "🔴 정지(Disarmed)"
-            mode_str = self.flight_mode
-            v_xy = math.hypot(self.out_vx_body, self.out_vy_body)
-            sys.stdout.write(
-                f"\r\033[K[{arm_str}] [{mode_str:13s}] "
-                f"고도:{self.current_alt_enu:5.2f}m | "
-                f"스틱속도:{v_xy:4.1f}m/s | "
-                f"헤딩:{math.degrees(self.current_yaw):+6.1f}°"
-            )
-            sys.stdout.flush()
 
     def destroy_node(self):
         self.multi_key.stop()
