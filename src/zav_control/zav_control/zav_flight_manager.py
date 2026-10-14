@@ -571,8 +571,8 @@ class ZAVFlightManager(Node):
 
             # 실시간 3차원 좌표계 변환 (Body FLU -> World NED)
             psi = self.target_yaw if self.yaw_initialized else self.current_yaw
-            vn = vx_eff * math.cos(psi) - vy_eff * math.sin(psi)
-            ve = vx_eff * math.sin(psi) + vy_eff * math.cos(psi)
+            vn = vx_eff * math.cos(psi) + vy_eff * math.sin(psi)
+            ve = vx_eff * math.sin(psi) - vy_eff * math.cos(psi)
             vd = -self.cmd_vz_body
 
             sp = TrajectorySetpoint()
