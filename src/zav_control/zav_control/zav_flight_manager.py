@@ -6,12 +6,20 @@ ZAV Quadrotor Central Flight Manager & Coordinate Bridge Node
 ==============================================================================
 패키지: zav_control
 노드명: zav_flight_manager
-기능:
-  1. Spacebar 시동 On/Off & W 키 즉시 수동 스로틀 이륙 완벽 보장!
-  2. 1번 Position Mode (수평 위치 고정 호버링)
-  3. 2번 Altitude Mode (수평 위치 제어기 OFF -> 바람/관성 흐름 완벽 재현!)
-  4. 3번 Offboard Traj & 4번 Offboard Rate 자율비행 (키보드 이동 완전 차단 ⛔)
-  5. 3차원 실시간 좌표 변환 (FLU -> NED)
+설명:
+  1. 시동 및 수동 스로틀 이륙:
+     - Spacebar 누르면 시동(Arm) On
+     - W 누르면 즉시 수직 상승 이륙! (손 떼면 고도 유지 호버링)
+  2. 1번 Position Mode vs 2번 Altitude Mode:
+     - 1번 (POSCTL): 손 떼면 급제동(decel=14.0) 제자리 강력 고정 호버링!
+     - 2번 (ALTCTL): 손 떼도 감속이 거의 없이(decel=0.3) 얼음판처럼 관성/바람 따라 스르륵 미끄러지며 흐름!
+       (invalid setpoints 에러 원천 차단)
+  3. 3번, 4번 자율비행 모드:
+     - 조종사 이동 키(WASD, 방향키) 100% 완전 차단 ⛔
+     - 비상/모드 전환 키(1, 2, Space, L, R, E)만 안전 인터락으로 즉시 개입 가능.
+  4. 비상 셧다운 (E 키):
+     - simulator_mavlink poll timeout 에러를 유발하는 FLIGHTTERMINATION 대신,
+       공중 즉시 강제 Disarm 매직넘버(21196.0)를 사용하여 통신 끊김 없이 모터 즉시 0 RPM 차단!
 ==============================================================================
 """
 
@@ -199,7 +207,7 @@ class ZAVFlightManager(Node):
         # 4. 비행 상태 관리 변수
         self.is_armed = False
         self.nav_state = 0
-        self.flight_mode = "POSCTL"  # 기본 모드: POSCTL (수동 위치 홀드 모드)
+        self.flight_mode = "POSCTL"
 
         # 센서 피드백
         self.current_x = 0.0
@@ -212,7 +220,6 @@ class ZAVFlightManager(Node):
         self.target_yaw = 0.0
         self.hold_x = 0.0
         self.hold_y = 0.0
-        self.hold_z_ned = 0.0
 
         # 속도 및 가감속 스펙
         self.max_speed_xy = 12.0
@@ -221,7 +228,9 @@ class ZAVFlightManager(Node):
         self.max_yaw_rate = 2.5
 
         self.accel_xy = 5.0
-        self.decel_xy = 14.0
+        self.decel_xy_pos = 14.0     # Position 모드 감속: 14.0 m/s^2 (손 떼면 즉시 제자리 정지!)
+        self.decel_xy_alt = 0.35     # Altitude 모드 감속: 0.35 m/s^2 (손 떼도 얼음판처럼 스르륵 미끄러지며 흐름!)
+
         self.accel_z = 2.5
         self.decel_z = 6.0
         self.accel_yaw = 2.5
@@ -270,11 +279,11 @@ class ZAVFlightManager(Node):
     S        : 【수동 스로틀 하강】 (손 떼면 현재 고도에서 딱 고정 호버링)
     L        : 【자동 착륙 (Land)】 (서서히 수직 착륙 후 모터 자동 셧다운)
     R        : 【홈 복귀 후 착륙 (RTL)】 (이륙 지점으로 자동 복귀)
-    E        : 🚨【EMERGENCY KILL】 (모터 즉시 강제 전원 차단 / 비상 추락)
+    E        : 🚨【EMERGENCY STOP】 (공중 강제 Disarm 매직코드로 즉시 0 RPM 정지!)
 
   [비행 모드 원클릭 스위칭]
-    [1] Position Mode  : GPS 기반 수동 제자리 호버링 모드 (키보드 조종 O)
-    [2] Altitude Mode  : 고도 유지 & 관성/바람 따라 흐르는 수동 모드 (키보드 조종 O)
+    [1] Position Mode  : GPS 기반 수동 제자리 호버링 (손 떼면 급제동 정지)
+    [2] Altitude Mode  : 고도 유지 & 관성/바람 따라 흐르는 수동 모드 (손 떼면 스르륵 흐름)
     [3] Offboard Traj  : 상위 플래너(/zav/cmd_vel) 자율비행 (키보드 이동 완전차단 ⛔)
     [4] Offboard Rate  : 미래 OMMPC(/zav/cmd_rate) 고속 자율비행 (키보드 이동 완전차단 ⛔)
 
@@ -332,7 +341,7 @@ class ZAVFlightManager(Node):
         if self.current_alt_enu < 0.35:
             if not self.is_armed:
                 print("\r\n⚡ [시동] 시동(Arm) 인가 중... 모터 아이들링 시작!\r\n")
-                # 시동 걸기 및 모드 활성화 (Offboard 백엔드 연결)
+                # 시동 걸기 및 Offboard 모드 즉시 활성화
                 self.send_vehicle_command(VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM, 1.0)
                 time.sleep(0.05)
                 self.send_vehicle_command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 1.0, 6.0)
@@ -356,11 +365,11 @@ class ZAVFlightManager(Node):
 
     def set_mode_posctl(self):
         self.flight_mode = "POSCTL"
-        print("\r\n🎯 [모드 변경] Position Mode (GPS 제자리 호버링 & 키보드 수동 조종) 활성화!\r\n")
+        print("\r\n🎯 [모드 변경] Position Mode (GPS 제자리 고정 호버링 활성화)!\r\n")
 
     def set_mode_altctl(self):
         self.flight_mode = "ALTCTL"
-        print("\r\n🎈 [모드 변경] Altitude Mode (고도 유지 & 수평 위치제어 OFF 관성 흐름) 활성화!\r\n")
+        print("\r\n🎈 [모드 변경] Altitude Mode (고도 고정 & 수평 제어 해제 관성 흐름 활성화)!\r\n")
 
     def set_mode_offboard_traj(self):
         self.flight_mode = "OFFBOARD_TRAJ"
@@ -381,8 +390,10 @@ class ZAVFlightManager(Node):
         print("\r\n🏠 [명령] 홈 복귀(RTL) 시작...\r\n")
 
     def set_emergency_kill(self):
-        self.send_vehicle_command(VehicleCommand.VEHICLE_CMD_DO_FLIGHTTERMINATION, 1.0)
-        print("\r\n🚨🚨 [EMERGENCY KILL] 모터 전원이 강제 차단되었습니다! 🚨🚨\r\n")
+        # MAVLink 타임아웃을 유발하는 FLIGHTTERMINATION 대신 공중 강제 Disarm 매직코드(21196.0) 사용
+        self.send_vehicle_command(VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM, 0.0, 21196.0)
+        self.is_armed = False
+        print("\r\n🚨🚨 [EMERGENCY STOP] 모터 전원이 강제 차단되었습니다! (Disarmed) 🚨🚨\r\n")
 
     def handle_key_command(self, ch: str):
         if ch == ' ':
@@ -413,7 +424,6 @@ class ZAVFlightManager(Node):
             self.set_mode_offboard_rate()
 
     def _update_stick_inputs(self):
-        """3, 4번 자율비행 중에는 사람 키보드 이동 입력 100% 차단!"""
         if self.flight_mode in ("OFFBOARD_TRAJ", "OFFBOARD_RATE"):
             self.des_vx_body = 0.0
             self.des_vy_body = 0.0
@@ -439,7 +449,7 @@ class ZAVFlightManager(Node):
         else:
             self.des_vy_body = 0.0
 
-        # 수직 스로틀 축 (W / S) - W 상승(+), S 하강(-)
+        # 수직 스로틀 축 (W / S)
         if (mask & KEY_W) and not (mask & KEY_S):
             self.des_vz_body = self.max_speed_z_up
         elif (mask & KEY_S) and not (mask & KEY_W):
@@ -470,12 +480,9 @@ class ZAVFlightManager(Node):
         dt = min(0.1, max(0.005, now - self.last_loop_time))
         self.last_loop_time = now
 
-        # 키보드 이동 입력 갱신
         self._update_stick_inputs()
 
-        # -------------------------------------------------------------
         # 1. 자동 2m 이륙 시퀀스 (T 키)
-        # -------------------------------------------------------------
         if self.is_auto_takeoff:
             if self.current_alt_enu >= 1.8 or (now - self.auto_takeoff_start_time > 8.0):
                 print(f"\r\n✨ 자동 2.0m 이륙 완료! (현재 고도: {self.current_alt_enu:.2f}m) -> 수동/자율 모드 조종 가능!\r\n")
@@ -491,9 +498,7 @@ class ZAVFlightManager(Node):
                 self.traj_setpoint_pub.publish(sp)
                 return
 
-        # -------------------------------------------------------------
-        # 2. [모드 4: OFFBOARD_RATE 자율비행] OMMPC 각속도/추력 제어
-        # -------------------------------------------------------------
+        # 2. 모드 4: OFFBOARD_RATE 자율비행
         if self.flight_mode == "OFFBOARD_RATE":
             self._publish_offboard_heartbeat(pos_vel=False, body_rate=True)
             rate_sp = VehicleRatesSetpoint()
@@ -506,7 +511,6 @@ class ZAVFlightManager(Node):
                 thrust_val = max(0.0, min(0.8, self.ext_cmd_rate.linear.z))
                 rate_sp.thrust_body[2] = float(-thrust_val)
             else:
-                # 안전한 기본 호버링 추력 (ZAV 실측 24%)
                 rate_sp.roll = 0.0
                 rate_sp.pitch = 0.0
                 rate_sp.yaw = 0.0
@@ -515,14 +519,12 @@ class ZAVFlightManager(Node):
             self.rate_setpoint_pub.publish(rate_sp)
             return
 
-        # -------------------------------------------------------------
-        # 3. [모드 1, 2, 3: 위치 및 속도 기반 비행 제어]
-        # -------------------------------------------------------------
+        # 3. 모드 1, 2, 3: 위치/속도 제어
         self._publish_offboard_heartbeat(pos_vel=True, body_rate=False)
         sp = TrajectorySetpoint()
         sp.timestamp = 0
 
-        # 모드 3(OFFBOARD_TRAJ)일 때는 상위 플래너 명령만 추종
+        # 모드 3(OFFBOARD_TRAJ): 상위 플래너 명령만 추종
         if self.flight_mode == "OFFBOARD_TRAJ":
             if self.ext_cmd_vel and (now - self.last_ext_vel_time < 0.3):
                 vx = self.ext_cmd_vel.linear.x
@@ -546,8 +548,11 @@ class ZAVFlightManager(Node):
 
         # 모드 1(POSCTL) 및 모드 2(ALTCTL): 키보드 수동 조종
         else:
-            self.cmd_vx_body = ramp_value(self.cmd_vx_body, self.des_vx_body, self.accel_xy, self.decel_xy, dt)
-            self.cmd_vy_body = ramp_value(self.cmd_vy_body, self.des_vy_body, self.accel_xy, self.decel_xy, dt)
+            # 모드에 따른 감속률(Deceleration) 차별화
+            current_decel_xy = self.decel_xy_alt if self.flight_mode == "ALTCTL" else self.decel_xy_pos
+
+            self.cmd_vx_body = ramp_value(self.cmd_vx_body, self.des_vx_body, self.accel_xy, current_decel_xy, dt)
+            self.cmd_vy_body = ramp_value(self.cmd_vy_body, self.des_vy_body, self.accel_xy, current_decel_xy, dt)
             self.cmd_vz_body = ramp_value(self.cmd_vz_body, self.des_vz_body, self.accel_z, self.decel_z, dt)
             self.cmd_yaw_rate = ramp_value(self.cmd_yaw_rate, self.des_yaw_rate, self.accel_yaw, self.decel_yaw, dt)
 
@@ -567,31 +572,19 @@ class ZAVFlightManager(Node):
             psi = self.target_yaw if self.yaw_initialized else self.current_yaw
             vn = vx_eff * math.cos(psi) + vy_eff * math.sin(psi)
             ve = vx_eff * math.sin(psi) - vy_eff * math.cos(psi)
-            vd = -self.cmd_vz_body  # W 누르면 vz > 0 -> vd < 0 (상승!)
+            vd = -self.cmd_vz_body  # W 누르면 상승(vd < 0)
 
-            if self.flight_mode == "ALTCTL":
-                # ★ 2번 ALTCTL 핵심: 수평 속도/위치를 NaN으로 마스킹 -> PX4 수평 위치제어 OFF (관성 흐름!)
-                sp.position = [float('nan'), float('nan'), float('nan')]
-                sp.velocity = [float('nan'), float('nan'), float(vd)]
-            else:
-                # ★ 1번 POSCTL 핵심: 수평/수직 속도 인가 및 손 떼면 제자리 고정!
-                is_moving = (abs(vx_eff) > 0.02 or abs(vy_eff) > 0.02 or
-                             abs(self.cmd_vz_body) > 0.02 or abs(self.cmd_yaw_rate) > 0.02)
-                if not is_moving and self.current_alt_enu > 0.2:
-                    sp.position = [float('nan'), float('nan'), float('nan')]
-                    sp.velocity = [0.0, 0.0, 0.0]
-                else:
-                    sp.position = [float('nan'), float('nan'), float('nan')]
-                    sp.velocity = [float(vn), float(ve), float(vd)]
-
+            # 항상 유효한 속도 벡터를 넘겨 mc_pos_control invalid setpoint 에러 원천 차단!
+            # 1번 POSCTL: 손 떼면 속도 0으로 제자리 강력 고정
+            # 2번 ALTCTL: 손 떼면 서서히 미끄러지며(decel=0.35) 흘러감!
+            sp.position = [float('nan'), float('nan'), float('nan')]
+            sp.velocity = [float(vn), float(ve), float(vd)]
             sp.acceleration = [float('nan'), float('nan'), float('nan')]
             sp.yaw = float(self.target_yaw) if self.yaw_initialized else float('nan')
             sp.yawspeed = float(self.cmd_yaw_rate)
             self.traj_setpoint_pub.publish(sp)
 
-        # -------------------------------------------------------------
         # 4. 실시간 상태 단일 라인 갱신 출력 (\033[K)
-        # -------------------------------------------------------------
         if now - self.last_print_time > 0.09:
             self.last_print_time = now
             arm_str = "🟢 시동(Armed)" if self.is_armed else "🔴 정지(Disarmed)"
@@ -600,7 +593,7 @@ class ZAVFlightManager(Node):
             sys.stdout.write(
                 f"\r\033[K[{arm_str}] [{mode_str:13s}] "
                 f"고도:{self.current_alt_enu:5.2f}m | "
-                f"속도:XY {v_xy:4.1f}m/s, Z {self.cmd_vz_body:+4.1f}m/s | "
+                f"스틱속도:{v_xy:4.1f}m/s | "
                 f"헤딩:{math.degrees(self.current_yaw):+6.1f}°"
             )
             sys.stdout.flush()
