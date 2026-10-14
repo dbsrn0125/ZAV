@@ -10,21 +10,20 @@
 1. Manual Position Teleop:
    - 기체 로컬 프레임(Body Frame) 기준 전/후/좌/우/상/하 비행
    - 전진 중 Yaw 회전 시 기수가 돌아가는 방향을 따라 실시간 선회(Heading Follow)
+   - 부드러운 Yaw 회전 튜닝 (1.0 rad/s 선형 가감속)
    - 키를 놓으면 즉시 제동 및 제자리 호버링
    - 좌우 방향키 반대 현상 보정 (←: 왼쪽, →: 오른쪽)
 
 2. Offboard Mode (상위 플래너 연동):
-   - 상위 자율비행 플래너(/zav/cmd_vel) 명령을 수신하여 PX4로 전달
+   - 상위 자율비행 플래너 목표 위치(/zav/goal_pose) 및 속도(/zav/cmd_vel) 수신
+   - 목표 위치 수신 시 PX4 TrajectorySetpoint의 3차원 위치 명령으로 자율 이동
    - 자율비행 중에는 수동 키보드 이동 입력을 안전하게 차단(Safety Gate)
    - 숫자키 1: Manual 모드 / 숫자키 2: Offboard 자율비행 모드
 
 3. PX4 <-> ROS 2 좌표계 변환:
-   - ROS 2 기체 바디 프레임: Body FLU (Forward: +X, Left: +Y, Up: +Z)
+   - ROS 2 좌표계: 로컬 기준 X(전방/North), Y(좌측/East), Z(상방/Up)
    - PX4 관성 항법 프레임: Inertial NED (North: +X, East: +Y, Down: +Z)
-   - 기체의 실시간 헤딩 psi(Yaw)를 기반으로 속도 벡터를 정확히 변환:
-     vn = vx_body * cos(psi) - vy_body * sin(psi)  [수정된 좌우 좌표계]
-     ve = vx_body * sin(psi) + vy_body * cos(psi)
-     vd = vz_ned
+   - 기체의 실시간 헤딩 psi(Yaw)를 기반으로 속도 및 위치 벡터를 정확히 변환
 ==============================================================================
 """
 
@@ -43,7 +42,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 
 # ROS 2 표준 메시지
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import Twist, PoseStamped
 
 # PX4 uORB 메시지 인터페이스
 from px4_msgs.msg import (
@@ -73,6 +72,16 @@ def wrap_pi(theta: float) -> float:
     while theta < -math.pi:
         theta += 2.0 * math.pi
     return theta
+
+
+def quat_to_yaw(qx: float, qy: float, qz: float, qw: float) -> float:
+    """쿼터니언을 Yaw(라디안)로 변환"""
+    norm = math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
+    if norm < 1e-4:
+        return float('nan')
+    siny_cosp = 2.0 * (qw * qz + qx * qy)
+    cosy_cosp = 1.0 - 2.0 * (qy * qy + qz * qz)
+    return math.atan2(siny_cosp, cosy_cosp)
 
 
 def ramp_value(current: float, target: float, accel_rate: float, decel_rate: float, dt: float) -> float:
@@ -216,10 +225,10 @@ class ZAVFlightManager(Node):
         self.accel_z = 2.5
         self.decel_z = 6.0
 
-        # Yaw 회전 각속도 파라미터 (최대 2.5 rad/s)
-        self.max_yaw_rate = 2.5
-        self.accel_yaw = 2.5
-        self.decel_yaw = 8.0
+        # [튜닝 완료] 부드러운 Yaw 회전 파라미터 (최대 1.0 rad/s ≈ 57.3°/s)
+        self.max_yaw_rate = 1.0
+        self.accel_yaw = 1.2
+        self.decel_yaw = 2.5
 
         # 센서 피드백
         self.current_alt = 0.0
@@ -229,6 +238,12 @@ class ZAVFlightManager(Node):
         self.takeoff_x = 0.0
         self.takeoff_y = 0.0
         self.yaw_initialized = False
+
+        # 안전 호버링용 저장 좌표
+        self.hold_x = 0.0
+        self.hold_y = 0.0
+        self.hold_z = -2.0
+        self.hold_yaw = 0.0
 
         # 목표 스틱값(des_*) 및 선형 보간된 현재 명령값(cmd_*)
         self.des_vx_body = 0.0
@@ -246,7 +261,12 @@ class ZAVFlightManager(Node):
         self.was_moving = False
         self.last_print_time = 0.0
 
-        # 상위 플래너 외부 명령 버퍼 (/zav/cmd_vel)
+        # 상위 플래너 외부 명령 버퍼
+        # 1) 목표 위치(/zav/goal_pose): [x, y, z, yaw]
+        self.ext_goal_pose = None
+        self.last_goal_time = 0.0
+
+        # 2) 목표 속도(/zav/cmd_vel): Twist
         self.ext_cmd_vel = None
         self.last_ext_vel_time = 0.0
 
@@ -269,19 +289,22 @@ class ZAVFlightManager(Node):
             depth=1
         )
 
-        # PX4 uORB 퍼블리셔 (동일 QoS 적용으로 통신 단절 원천 차단)
+        # PX4 uORB 퍼블리셔
         self.cmd_pub = self.create_publisher(VehicleCommand, '/fmu/in/vehicle_command', qos_px4)
         self.offboard_mode_pub = self.create_publisher(OffboardControlMode, '/fmu/in/offboard_control_mode', qos_px4)
         self.setpoint_pub = self.create_publisher(TrajectorySetpoint, '/fmu/in/trajectory_setpoint', qos_px4)
 
-        # PX4 uORB 서브스크라이버 (PX4 버전별 _v1, _v4 토픽 완벽 이중 구독)
+        # PX4 uORB 서브스크라이버 (이중 구독으로 실시간 피드백 보장)
         self.status_sub = self.create_subscription(VehicleStatus, '/fmu/out/vehicle_status', self._status_cb, qos_px4)
         self.status_v4_sub = self.create_subscription(VehicleStatus, '/fmu/out/vehicle_status_v4', self._status_cb, qos_px4)
         self.local_pos_sub = self.create_subscription(VehicleLocalPosition, '/fmu/out/vehicle_local_position', self._pos_cb, qos_px4)
         self.local_pos_v1_sub = self.create_subscription(VehicleLocalPosition, '/fmu/out/vehicle_local_position_v1', self._pos_cb, qos_px4)
 
-        # 상위 플래너 경로/속도 입력 인터페이스 (ROS 2 표준 Twist)
-        self.create_subscription(Twist, '/zav/cmd_vel', self._on_external_cmd_vel, 10)
+        # 상위 플래너 외부 입력 인터페이스
+        # 1. 위치 목표 (Position Command / Goal Pose)
+        self.create_subscription(PoseStamped, '/zav/goal_pose', self._on_goal_pose, 10)
+        # 2. 속도 목표 (Velocity Command)
+        self.create_subscription(Twist, '/zav/cmd_vel', self._on_cmd_vel, 10)
 
         # 50Hz (20ms) 고정밀 제어 루프
         self.dt = 0.02
@@ -298,7 +321,7 @@ class ZAVFlightManager(Node):
         self.nav_state = msg.nav_state
 
     def _pos_cb(self, msg: VehicleLocalPosition):
-        """실시간 고도 및 헤딩 갱신 (전방 선회 비행의 핵심)"""
+        """실시간 고도 및 헤딩 갱신 (선회 비행의 핵심)"""
         self.current_alt = -msg.z
         self.current_yaw = msg.heading
         self.current_x = msg.x
@@ -310,8 +333,23 @@ class ZAVFlightManager(Node):
             self.is_flying = True
             self.target_yaw = wrap_pi(msg.heading)
 
-    def _on_external_cmd_vel(self, msg: Twist):
-        """상위 플래너 명령 수신"""
+    def _on_goal_pose(self, msg: PoseStamped):
+        """
+        [상위 플래너 위치 목표 콜백]
+        ROS 좌표계(ENU/Local Map): X(전방/North), Y(좌측/East), Z(상방/Up)
+        """
+        px = msg.pose.position.x
+        py = msg.pose.position.y
+        pz = msg.pose.position.z
+        ori = msg.pose.orientation
+        yaw = quat_to_yaw(ori.x, ori.y, ori.z, ori.w)
+
+        self.ext_goal_pose = (px, py, pz, yaw)
+        self.last_goal_time = time.time()
+        print(f"\r\n🎯 [목표 수신] Offboard 목표 위치 -> X:{px:.2f}m, Y:{py:.2f}m, Z:{pz:.2f}m\r\n")
+
+    def _on_cmd_vel(self, msg: Twist):
+        """[상위 플래너 속도 목표 콜백]"""
         self.ext_cmd_vel = msg
         self.last_ext_vel_time = time.time()
 
@@ -372,7 +410,7 @@ class ZAVFlightManager(Node):
         else:
             self.des_vx_body = 0.0
 
-        # 2) 좌우 축 (Left / Right) -> 사용자 피드백 반영: 좌우 반대 보정!
+        # 2) 좌우 축 (Left / Right) -> 좌우 반대 보정 완료
         # ← (KEY_LEFT)  : 드론 머리 기준 '왼쪽' (-vy_body)
         # → (KEY_RIGHT) : 드론 머리 기준 '오른쪽' (+vy_body)
         if (mask & KEY_LEFT) and not (mask & KEY_RIGHT):
@@ -392,7 +430,7 @@ class ZAVFlightManager(Node):
         else:
             self.des_vz_ned = 0.0
 
-        # 4) Yaw 회전 축 (A / D) -> 좌회전(-rate) / 우회전(+rate)
+        # 4) Yaw 회전 축 (A / D) -> 부드러운 좌회전(-rate) / 우회전(+rate)
         if (mask & KEY_A) and not (mask & KEY_D):
             self.des_yaw_rate = -self.max_yaw_rate
         elif (mask & KEY_D) and not (mask & KEY_A):
@@ -411,18 +449,34 @@ class ZAVFlightManager(Node):
         # 최신 키보드 입력 폴링
         self.multi_key.poll_latest()
 
-        # [핵심 2] Offboard 모드: 상위 플래너(/zav/cmd_vel) 명령 중계
+        # ----------------------------------------------------------------------
+        # [핵심 2] Offboard 모드: 상위 플래너 외부 명령 중계 (위치 or 속도)
+        # ----------------------------------------------------------------------
         if self.flight_mode == "OFFBOARD_TRAJ":
             self.publish_offboard_mode()
             sp = TrajectorySetpoint()
             sp.timestamp = 0
-            if self.ext_cmd_vel and (now - self.last_ext_vel_time < 0.3):
+
+            # 1. 위치 목표(/zav/goal_pose)가 수신된 경우: 3차원 위치 자율 추종
+            if self.ext_goal_pose is not None:
+                gx, gy, gz, gyaw = self.ext_goal_pose
+                # ROS(North, East, Up) -> PX4 NED(North, East, Down)
+                sp.position = [float(gx), float(gy), float(-gz)]
+                sp.velocity = [float('nan'), float('nan'), float('nan')]
+                sp.acceleration = [float('nan'), float('nan'), float('nan')]
+                sp.yaw = float(gyaw) if not math.isnan(gyaw) else float('nan')
+                sp.yawspeed = float('nan')
+                self.setpoint_pub.publish(sp)
+                return
+
+            # 2. 속도 목표(/zav/cmd_vel)가 수신된 경우: 속도 벡터 추종
+            elif self.ext_cmd_vel is not None and (now - self.last_ext_vel_time < 0.5):
                 vx = self.ext_cmd_vel.linear.x
                 vy = self.ext_cmd_vel.linear.y
                 vz = self.ext_cmd_vel.linear.z
                 yaw_rate = self.ext_cmd_vel.angular.z
 
-                # [핵심 3] 좌표계 변환: 상위 플래너 Body(FLU) -> PX4 Inertial(NED)
+                # 좌표계 변환: 상위 플래너 Body(FLU) -> PX4 Inertial(NED)
                 psi = self.current_yaw
                 vn = vx * math.cos(psi) - vy * math.sin(psi)
                 ve = vx * math.sin(psi) + vy * math.cos(psi)
@@ -433,16 +487,22 @@ class ZAVFlightManager(Node):
                 sp.acceleration = [float('nan'), float('nan'), float('nan')]
                 sp.yaw = float('nan')
                 sp.yawspeed = float(yaw_rate)
+                self.setpoint_pub.publish(sp)
+                return
+
+            # 3. 외부 명령 대기 중: 전환 시점 위치에 안전하게 정지 호버링
             else:
-                sp.position = [float('nan'), float('nan'), float('nan')]
+                sp.position = [float(self.hold_x), float(self.hold_y), float(self.hold_z)]
                 sp.velocity = [0.0, 0.0, 0.0]
                 sp.acceleration = [float('nan'), float('nan'), float('nan')]
-                sp.yaw = float('nan')
+                sp.yaw = float(self.hold_yaw)
                 sp.yawspeed = 0.0
-            self.setpoint_pub.publish(sp)
-            return
+                self.setpoint_pub.publish(sp)
+                return
 
+        # ----------------------------------------------------------------------
         # [핵심 1] Manual Teleop 모드 및 자동 이륙 처리
+        # ----------------------------------------------------------------------
         self.publish_offboard_mode()
         sp = TrajectorySetpoint()
         sp.timestamp = 0
@@ -491,7 +551,7 @@ class ZAVFlightManager(Node):
             vx_eff = self.cmd_vx_body
             vy_eff = self.cmd_vy_body
 
-        # 실시간 상태 출력 (조작 중에만 출력하여 화면 깜빡임 방지)
+        # 실시간 상태 출력 (조작 중에만 출력)
         is_moving_now = (vel_xy_norm > 0.02) or (abs(self.cmd_vz_ned) > 0.02) or (abs(self.cmd_yaw_rate) > 0.02)
         if (is_moving_now or self.was_moving) and (now - self.last_print_time > 0.08):
             self.last_print_time = now
@@ -499,14 +559,14 @@ class ZAVFlightManager(Node):
             print(
                 f"\r🎮 [스틱] 수평:{vel_xy_norm:4.1f}m/s (전후:{vx_eff:+5.1f}, 좌우:{vy_eff:+5.1f}) | "
                 f"수직:{-self.cmd_vz_ned:+4.1f}m/s | "
-                f"Yaw:{math.degrees(self.cmd_yaw_rate):+5.1f}°/s (헤딩:{math.degrees(self.current_yaw):+6.1f}°)   ",
+                f"Yaw:{math.degrees(self.cmd_yaw_rate):+4.1f}°/s (헤딩:{math.degrees(self.current_yaw):+5.1f}°)   ",
                 end='', flush=True
             )
 
-        # Yaw 회전 및 목표 헤딩 갱신
+        # [부드러운 Yaw 회전 적분] 0.08 스텝으로 회전 충격 완화
         if abs(self.cmd_yaw_rate) > 0.01:
             self.was_turning_yaw = True
-            self.target_yaw = wrap_pi(self.current_yaw + self.cmd_yaw_rate * 0.15)
+            self.target_yaw = wrap_pi(self.current_yaw + self.cmd_yaw_rate * 0.08)
         else:
             if self.was_turning_yaw:
                 self.target_yaw = wrap_pi(self.current_yaw)
@@ -519,10 +579,8 @@ class ZAVFlightManager(Node):
         #   - vx_eff: 전진(+) / 후진(-)
         #   - vy_eff: 오른쪽(+) / 왼쪽(-) [보정된 방향]
         #
-        # 기체의 현재 헤딩 psi (Yaw, 북쪽 기준 시계방향 각도):
-        #   - 회전 중일 때는 현재 실시간 헤딩(current_yaw)을 사용하여
-        #     기수가 회전하는 방향으로 전진 속도 벡터가 실시간 선회(Heading Follow)합니다.
-        #   - 회전 키를 뗐을 때는 고정된 목표 헤딩(target_yaw)으로 직진성을 완벽히 유지합니다.
+        # 회전 중일 때는 현재 실시간 헤딩(current_yaw)을 사용하여
+        # 기수가 돌아가는 방향으로 전진 속도 벡터가 실시간 선회(Heading Follow)합니다.
         #
         # Inertial NED (North-East-Down) 변환 수식:
         #   vn = vx_eff * cos(psi) - vy_eff * sin(psi)
@@ -554,14 +612,14 @@ class ZAVFlightManager(Node):
     Spacebar : 시동 토글 (Arm / Disarm) 및 긴급 제자리 브레이크
     T        : 자동 수직 이륙 (목표 고도 2.0m 도달 후 호버링)
     1        : Manual Teleop 모드 (수동 조종 활성화)
-    2        : Offboard 모드 (상위 플래너 연동 / 수동 키 잠금 ⛔)
+    2        : Offboard 모드 (상위 플래너 /zav/goal_pose 자율비행 / 수동 키 잠금 ⛔)
     L        : 자동 착륙 (Land)
     E        : 비상 모터 강제 전원 차단 (Emergency Kill)
     Q        : 안전 종료
 
   [수동 조종키 (드론 기수 로컬 프레임 기준)]
     W / S    : 고도 상승(최대 3.0 m/s) / 하강(최대 1.5 m/s)
-    A / D    : 좌회전 / 우회전 (선형 가감속)
+    A / D    : 부드러운 좌회전 / 우회전 (최대 57°/s 부드러운 선회)
     ↑ / ↓    : 드론 기수 앞(전진) / 뒤(후진)
     ← / →    : 드론 기수 왼쪽 / 오른쪽 (방향 보정 완료)
     ★ 회전 선회 : 전진(↑)하면서 좌/우 회전(A/D) 시 기수 방향으로 부드럽게 선회!
@@ -595,6 +653,7 @@ class ZAVFlightManager(Node):
 
         elif key in ('1',):
             self.flight_mode = "MANUAL"
+            self.ext_goal_pose = None
             print("\r\n🎮 [모드 전환] -> 1번 Manual Teleop 모드 (수동 조종 활성화)\r\n")
 
         elif key in ('2',):
@@ -603,7 +662,13 @@ class ZAVFlightManager(Node):
             self.des_vy_body = self.cmd_vy_body = 0.0
             self.des_vz_ned = self.cmd_vz_ned = 0.0
             self.des_yaw_rate = self.cmd_yaw_rate = 0.0
-            print("\r\n🤖 [모드 전환] -> 2번 Offboard 자율비행 모드 (/zav/cmd_vel 수신 대기 / 수동 키 잠금 ⛔)\r\n")
+            # 전환 시점의 현재 위치를 안전 호버링 위치로 고정
+            self.hold_x = self.current_x
+            self.hold_y = self.current_y
+            self.hold_z = -self.current_alt if self.current_alt > 0.3 else -2.0
+            self.hold_yaw = self.current_yaw
+            print(f"\r\n🤖 [모드 전환] -> 2번 Offboard 자율비행 모드 (/zav/goal_pose 수신 대기 / 수동 키 잠금 ⛔)")
+            print(f"   현재 위치 유지 호버링: X={self.hold_x:.2f}m, Y={self.hold_y:.2f}m, Z={-self.hold_z:.2f}m\r\n")
 
         elif key in ('l', 'L'):
             print("\r\n🛬 [착륙] 자동 착륙(NAV_LAND) 명령 송신...\r\n")
@@ -622,6 +687,7 @@ class ZAVFlightManager(Node):
             self.des_yaw_rate = self.cmd_yaw_rate = 0.0
             self.vx_release_time = self.vy_release_time = self.vz_release_time = self.yaw_release_time = 0.0
             self.target_yaw = wrap_pi(self.current_yaw)
+            self.ext_goal_pose = None
             if not self.is_flying and not self.is_taking_off:
                 if not self.is_armed:
                     print("\r\n⚡ [시동] Arming 명령 송신...\r\n")
