@@ -98,10 +98,13 @@ def wrap_pi(angle: float) -> float:
 def ramp_stick_value(current: float, target: float, push_rate: float, return_rate: float, dt: float) -> float:
     """
     [조종기 짐벌 스틱 물리 모사 필터 (Stick Input Shaping)]
-    - 스틱을 밀 때(push): 조종사의 손가락 반응 속도(push_rate)로 선형 증가
-    - 스틱을 놓을 때(return): 센터링 스프링의 복원력(return_rate)으로 0을 향해 선형 감소
+    - 반대타 입력 시 (current * target < 0): 즉각적인 카운터 스티어링을 위해 최고속도(12.0 m/s^2)로 즉시 전환
+    - 스틱을 놓을 때 (target == 0): 센터링 스프링의 복원력(return_rate)으로 0을 향해 복귀
+    - 스틱을 밀 때 (target != 0): 손가락 반응 속도(push_rate)로 선형 증가
     """
-    if abs(target) < 1e-5 or (current * target < 0.0):
+    if current * target < 0.0:
+        rate = max(push_rate * 2.5, 14.0)  # 반대타는 칼같이 즉각 반응!
+    elif abs(target) < 1e-5:
         rate = return_rate
     else:
         rate = push_rate
@@ -590,9 +593,9 @@ class ZAVFlightManager(Node):
             self._publish_offboard_heartbeat(velocity_mode=True, body_rate_mode=False)
 
             # 1. 스틱 스프링 복귀 필터 적용 (Input Shaping)
-            # 모드 1(MANUAL_POS): return_rate=7.0 m/s^2 (키 떼면 즉시 0 복귀 -> PX4 제동 및 호버링)
-            # 모드 2(ALTCTL): return_rate=0.35 m/s^2 (키 떼도 스르륵 미끄러지며 관성 비행 유지)
-            cur_return_xy = 0.35 if self.flight_mode == "ALTCTL" else self.stick_return_xy
+            # 모드 1(MANUAL_POS): return_rate=10.0 m/s^2 (키 떼면 즉시 0 복귀 -> PX4 제동 및 호버링)
+            # 모드 2(ALTCTL): return_rate=1.8 m/s^2 (공기 저항 감쇠로 자연스럽게 미끄러짐 + 반대타 즉시 반영)
+            cur_return_xy = 1.8 if self.flight_mode == "ALTCTL" else 10.0
 
             self.out_vx_body = ramp_stick_value(self.out_vx_body, self.target_vx_body, self.stick_push_xy, cur_return_xy, dt)
             self.out_vy_body = ramp_stick_value(self.out_vy_body, self.target_vy_body, self.stick_push_xy, cur_return_xy, dt)
