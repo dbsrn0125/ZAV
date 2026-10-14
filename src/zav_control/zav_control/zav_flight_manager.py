@@ -64,7 +64,7 @@ KEY_W     = 1 << 4  # 16  (상승 W)
 KEY_S     = 1 << 5  # 32  (하강 S)
 KEY_A     = 1 << 6  # 64  (좌회전 A)
 KEY_D     = 1 << 7  # 128 (우회전 D)
-KEY_SPACE = 1 << 8  # 256 (시동 Arm/Disarm 토글 or 비상 브레이크)
+KEY_SPACE = 1 << 8  # 256 (Spacebar)
 
 
 def wrap_pi(angle: float) -> float:
@@ -76,122 +76,115 @@ def wrap_pi(angle: float) -> float:
     return angle
 
 
-def ramp_value(current: float, target: float, accel: float, decel: float, dt: float) -> float:
+def ramp_value(current: float, target: float, accel_rate: float, decel_rate: float, dt: float) -> float:
     """스틱 선형 가감속 (Ramp) 필터: 부드러운 가속 및 즉각적인 감속"""
-    if abs(target) > abs(current):
-        rate = accel
+    if abs(target) < 1e-5 or (current * target < 0.0):
+        rate = decel_rate
     else:
-        rate = decel
+        rate = accel_rate
 
     step = rate * dt
-    if target > current:
+    if current < target:
         return min(target, current + step)
-    elif target < current:
+    elif current > target:
         return max(target, current - step)
-    return current
+    return target
 
 
-class MultiKeyPoller:
+class Win32MultiKeyReader:
     """
-    Windows GetAsyncKeyState 기반 초고속 무지연 다중 키 감지 백엔드.
-    버퍼 밀림(Buffer Bloat)을 원천 방지하여 키에서 손을 떼는 즉시 0.01초 내 감속 복귀.
+    WSL2 환경에서 Windows user32.dll GetAsyncKeyState를 호출하여 다중 키 동시 눌림을 감지하되,
+    파이프 버퍼를 논블로킹으로 한 번에 모두 비우고 최신 상태만 읽어
+    키를 뗐을 때 지연 없이 즉시 0으로 복귀하도록 보장하는 클래스.
     """
     def __init__(self):
-        self.active = False
         self.key_mask = 0
-        self.proc = None
+        self.active = False
+        self._proc = None
         self._pipe_fd = None
+        self._recv_buf = b""
 
-        is_wsl = False
-        try:
-            with open("/proc/version", "r") as f:
-                if "microsoft" in f.read().lower():
-                    is_wsl = True
-        except Exception:
-            pass
-
-        if not is_wsl:
-            return
-
-        powershell_bin = None
-        for p in ["/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
-                  "/mnt/c/Windows/System32/powershell.exe"]:
-            if os.path.isfile(p):
-                powershell_bin = p
-                break
-
-        if not powershell_bin:
-            return
-
-        ps_script = (
-            "$code = @'\n"
-            "using System;\n"
-            "using System.Runtime.InteropServices;\n"
-            "public class K {\n"
-            "    [DllImport(\"user32.dll\")]\n"
-            "    public static extern short GetAsyncKeyState(int vKey);\n"
-            "}\n"
-            "'@\n"
-            "Add-Type -TypeDefinition $code\n"
-            "$keys = @(0x26, 0x28, 0x25, 0x27, 0x57, 0x53, 0x41, 0x44, 0x20)\n"
-            "while ($true) {\n"
-            "    $m = 0\n"
-            "    for ($i = 0; $i -lt $keys.Length; $i++) {\n"
-            "        if ([K]::GetAsyncKeyState($keys[$i]) -band 0x8000) {\n"
-            "            $m = $m -bor (1 -shl $i)\n"
-            "        }\n"
-            "    }\n"
-            "    [Console]::WriteLine($m)\n"
-            "    [System.Threading.Thread]::Sleep(12)\n"
-            "}\n"
-        )
-        encoded_cmd = base64.b64encode(ps_script.encode('utf-16le')).decode('ascii')
-
-        try:
-            self.proc = subprocess.Popen(
-                [powershell_bin, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded_cmd],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                bufsize=0
+        ps_exe = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+        if os.path.exists(ps_exe):
+            ps_code = (
+                "Add-Type -TypeDefinition '"
+                "using System; using System.Runtime.InteropServices; "
+                "public class KS { [DllImport(\"user32.dll\")] public static extern short GetAsyncKeyState(int vKey); }"
+                "'; "
+                "while ($true) { "
+                "$m = 0; "
+                "if (([int][KS]::GetAsyncKeyState(0x26) -band 0x8000) -ne 0) { $m = $m -bor 1 }; "
+                "if (([int][KS]::GetAsyncKeyState(0x28) -band 0x8000) -ne 0) { $m = $m -bor 2 }; "
+                "if (([int][KS]::GetAsyncKeyState(0x25) -band 0x8000) -ne 0) { $m = $m -bor 4 }; "
+                "if (([int][KS]::GetAsyncKeyState(0x27) -band 0x8000) -ne 0) { $m = $m -bor 8 }; "
+                "if (([int][KS]::GetAsyncKeyState(0x57) -band 0x8000) -ne 0) { $m = $m -bor 16 }; "
+                "if (([int][KS]::GetAsyncKeyState(0x53) -band 0x8000) -ne 0) { $m = $m -bor 32 }; "
+                "if (([int][KS]::GetAsyncKeyState(0x41) -band 0x8000) -ne 0) { $m = $m -bor 64 }; "
+                "if (([int][KS]::GetAsyncKeyState(0x44) -band 0x8000) -ne 0) { $m = $m -bor 128 }; "
+                "if (([int][KS]::GetAsyncKeyState(0x20) -band 0x8000) -ne 0) { $m = $m -bor 256 }; "
+                "[Console]::Out.WriteLine($m); "
+                "[Console]::Out.Flush(); "
+                "Start-Sleep -Milliseconds 20 "
+                "}"
             )
-            self._pipe_fd = self.proc.stdout.fileno()
-            os.set_blocking(self._pipe_fd, False)
-            self.active = True
-        except Exception:
-            self.active = False
+            encoded = base64.b64encode(ps_code.encode('utf-16le')).decode('ascii')
+            try:
+                self._proc = subprocess.Popen(
+                    [ps_exe, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    bufsize=0
+                )
+                self._pipe_fd = self._proc.stdout.fileno()
+                os.set_blocking(self._pipe_fd, False)
+            except Exception:
+                self.active = False
 
     def poll_latest(self):
-        """파이프 버퍼를 완전히 비우고 가장 최신의 키 비트마스크 갱신"""
-        if not self.active or self._pipe_fd is None:
+        """파이프에 쌓인 모든 데이터를 한 번에 비우고 가장 마지막(최신) 비트마스크만 추출"""
+        if self._pipe_fd is None:
+            return 0
+        try:
+            while True:
+                data = os.read(self._pipe_fd, 4096)
+                if not data:
+                    break
+                self._recv_buf += data
+        except BlockingIOError:
+            pass
+        except Exception:
             return self.key_mask
 
-        latest_data = b""
-        while True:
-            try:
-                chunk = os.read(self._pipe_fd, 4096)
-                if not chunk:
+        if b"\n" in self._recv_buf:
+            lines = self._recv_buf.split(b"\n")
+            self._recv_buf = lines[-1]
+            for raw_line in reversed(lines[:-1]):
+                s = raw_line.strip()
+                if s.isdigit():
+                    self.key_mask = int(s)
+                    self.active = True
                     break
-                latest_data += chunk
-            except (BlockingIOError, InterruptedError):
-                break
-
-        if latest_data:
-            lines = latest_data.strip().split(b"\n")
-            if lines:
-                last_line = lines[-1].strip()
-                try:
-                    self.key_mask = int(last_line)
-                except ValueError:
-                    pass
         return self.key_mask
 
-    def terminate(self):
-        if self.proc:
+    def stop(self):
+        if self._proc:
             try:
-                self.proc.terminate()
-                self.proc.wait(timeout=0.3)
+                self._proc.kill()
             except Exception:
                 pass
+
+
+def read_key_nonblocking(fd: int) -> str:
+    """리눅스 터미널 비차단 1글자 읽기 (단축키용)"""
+    rlist, _, _ = select.select([fd], [], [], 0.005)
+    if not rlist:
+        return ''
+    try:
+        raw_bytes = os.read(fd, 32)
+        return raw_bytes.decode('utf-8', errors='ignore')
+    except Exception:
+        return ''
 
 
 class ZAVFlightManager(Node):
@@ -216,40 +209,30 @@ class ZAVFlightManager(Node):
             depth=1
         )
 
-        # -------------------------------------------------------------
         # 1. PX4 통신 퍼블리셔 (Micro-XRCE-DDS)
-        # -------------------------------------------------------------
         self.cmd_pub = self.create_publisher(VehicleCommand, '/fmu/in/vehicle_command', qos_pub)
         self.offboard_mode_pub = self.create_publisher(OffboardControlMode, '/fmu/in/offboard_control_mode', qos_pub)
         self.traj_setpoint_pub = self.create_publisher(TrajectorySetpoint, '/fmu/in/trajectory_setpoint', qos_pub)
         self.rate_setpoint_pub = self.create_publisher(VehicleRatesSetpoint, '/fmu/in/vehicle_rates_setpoint', qos_pub)
 
-        # -------------------------------------------------------------
         # 2. PX4 상태 구독자
-        # -------------------------------------------------------------
         self.create_subscription(VehicleStatus, '/fmu/out/vehicle_status', self._on_vehicle_status, qos_sub)
         self.create_subscription(VehicleLocalPosition, '/fmu/out/vehicle_local_position', self._on_local_position, qos_sub)
 
-        # -------------------------------------------------------------
-        # 3. 상위 자율비행 제어기 입력 인터페이스 (포트 A & 포트 B)
-        # -------------------------------------------------------------
-        # 포트 A: 일반 플래너(SUPER/경로계획) 속도 명령 수신 (/zav/cmd_vel)
+        # 3. 상위 자율비행 제어기 입력 인터페이스
         self.create_subscription(Twist, '/zav/cmd_vel', self._on_external_cmd_vel, 10)
-        # 포트 B: 고속 제어기(OMMPC) 각속도/추력 명령 수신 (/zav/cmd_rate)
         self.create_subscription(Twist, '/zav/cmd_rate', self._on_external_cmd_rate, 10)
 
-        # -------------------------------------------------------------
         # 4. 비행 상태 관리 변수
-        # -------------------------------------------------------------
         self.is_armed = False
         self.nav_state = 0
-        self.flight_mode = "MANUAL_HOLD"  # POSCTL, ALTCTL, OFFBOARD_TRAJ, OFFBOARD_RATE
+        self.flight_mode = "MANUAL"
 
         # 기체 현재 상태 (PX4 EKF2 수신값)
         self.current_x = 0.0
         self.current_y = 0.0
-        self.current_z_ned = 0.0  # NED: 아래가 +, 상승 시 음수
-        self.current_alt_enu = 0.0  # ENU: 위가 +, 직관적인 양수 고도(m)
+        self.current_z_ned = 0.0
+        self.current_alt_enu = 0.0
         self.current_yaw = 0.0
         self.yaw_initialized = False
 
@@ -265,17 +248,17 @@ class ZAVFlightManager(Node):
         self.max_speed_z_dn = 1.5    # 최대 하강 속도 1.5 m/s
         self.max_yaw_rate = 2.5      # 최대 각속도 2.5 rad/s (~143 deg/s)
 
-        self.accel_xy = 14.0
-        self.decel_xy = 28.0
-        self.accel_z = 8.0
-        self.decel_z = 16.0
-        self.accel_yaw = 8.0
-        self.decel_yaw = 16.0
+        self.accel_xy = 5.0
+        self.decel_xy = 14.0
+        self.accel_z = 2.5
+        self.decel_z = 6.0
+        self.accel_yaw = 2.5
+        self.decel_yaw = 8.0
 
         # 실시간 속도 명령 (Body FLU 기준)
         self.cmd_vx_body = 0.0
         self.cmd_vy_body = 0.0
-        self.cmd_vz_body = 0.0       # Body FLU: +가 상승
+        self.cmd_vz_body = 0.0
         self.cmd_yaw_rate = 0.0
 
         self.des_vx_body = 0.0
@@ -294,17 +277,8 @@ class ZAVFlightManager(Node):
         self.is_auto_takeoff = False
         self.auto_takeoff_start_time = 0.0
 
-        # 다중 키 감지기 초기화
-        self.multi_key = MultiKeyPoller()
-
-        # 터미널 설정 (싱글 키 감지용 non-blocking stdin)
-        self.orig_term_settings = None
-        try:
-            self.orig_term_settings = termios.tcgetattr(sys.stdin)
-            tty.setcbreak(sys.stdin.fileno())
-            os.set_blocking(sys.stdin.fileno(), False)
-        except Exception:
-            pass
+        # 다중 키 감지기 시작
+        self.multi_key = Win32MultiKeyReader()
 
         # 주기적 제어 루프 타이머 (50Hz = 20ms 주기)
         self.last_loop_time = time.time()
@@ -350,7 +324,7 @@ class ZAVFlightManager(Node):
         self.current_x = msg.x
         self.current_y = msg.y
         self.current_z_ned = msg.z
-        self.current_alt_enu = -msg.z  # NED -> ENU 고도 변환 (지면 위 = 양수)
+        self.current_alt_enu = -msg.z
 
         if not self.yaw_initialized and not math.isnan(msg.heading):
             self.current_yaw = msg.heading
@@ -360,12 +334,10 @@ class ZAVFlightManager(Node):
             self.current_yaw = msg.heading
 
     def _on_external_cmd_vel(self, msg: Twist):
-        """상위 플래너(SUPER 등)로부터의 속도 명령 수신 (/zav/cmd_vel)"""
         self.ext_cmd_vel = msg
         self.last_ext_vel_time = time.time()
 
     def _on_external_cmd_rate(self, msg: Twist):
-        """고속 제어기(OMMPC 등)로부터의 각속도/추력 명령 수신 (/zav/cmd_rate)"""
         self.ext_cmd_rate = msg
         self.last_ext_rate_time = time.time()
 
@@ -385,103 +357,97 @@ class ZAVFlightManager(Node):
         cmd.timestamp = 0
         self.cmd_pub.publish(cmd)
 
-    def set_arm(self, arm: bool):
-        """시동 걸기(Arm) / 끄기(Disarm)"""
-        self.send_vehicle_command(VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM, 1.0 if arm else 0.0)
-
-    def set_mode_posctl(self):
-        """Position Mode (PX4 POSCTL) 전환"""
-        self.send_vehicle_command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 1.0, 3.0)  # Custom mode 3 = POSCTL
-        self.flight_mode = "POSCTL"
-        print("\r\n🎯 [모드 변경] Position Mode (GPS 제자리 호버링) 활성화!\r")
-
-    def set_mode_altctl(self):
-        """Altitude Mode (PX4 ALTCTL) 전환"""
-        self.send_vehicle_command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 1.0, 2.0)  # Custom mode 2 = ALTCTL
-        self.flight_mode = "ALTCTL"
-        print("\r\n🎈 [모드 변경] Altitude Mode (고도 유지 & 수평 수동 흐름) 활성화!\r")
-
-    def set_mode_offboard_traj(self):
-        """Offboard Trajectory Mode (위치/속도 자율비행) 전환"""
-        self.send_vehicle_command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 1.0, 6.0)  # Custom mode 6 = OFFBOARD
-        self.flight_mode = "OFFBOARD_TRAJ"
-        print("\r\n🚀 [모드 변경] Offboard Trajectory Mode (상위 플래너 자율비행) 활성화!\r")
-
-    def set_mode_offboard_rate(self):
-        """Offboard Rate Mode (OMMPC 고속 각속도 자율비행) 전환"""
-        self.send_vehicle_command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 1.0, 6.0)
-        self.flight_mode = "OFFBOARD_RATE"
-        print("\r\n⚡ [모드 변경] Offboard Rate Mode (OMMPC 고속 각속도 제어) 활성화!\r")
-
-    def set_land(self):
-        """자동 착륙 (Land)"""
-        self.send_vehicle_command(VehicleCommand.VEHICLE_CMD_NAV_LAND)
-        self.flight_mode = "LAND"
-        print("\r\n🛬 [명령] 자동 착륙(Land) 시작...\r")
-
-    def set_rtl(self):
-        """홈 복귀 후 착륙 (RTL)"""
-        self.send_vehicle_command(VehicleCommand.VEHICLE_CMD_NAV_RETURN_TO_LAUNCH)
-        self.flight_mode = "RTL"
-        print("\r\n🏠 [명령] 홈 복귀(RTL) 시작...\r")
-
-    def set_emergency_kill(self):
-        """비상 강제 모터 차단 (Kill)"""
-        self.send_vehicle_command(VehicleCommand.VEHICLE_CMD_DO_FLIGHTTERMINATION, 1.0)
-        print("\r\n🚨🚨 [EMERGENCY KILL] 모터 전원이 강제 차단되었습니다! 🚨🚨\r")
-
-    def _poll_single_keys(self):
-        """단축키 (Space, T, L, R, E, 1~4) 비차단 감지"""
-        while True:
-            try:
-                ch = sys.stdin.read(1)
-                if not ch:
-                    break
-            except Exception:
-                break
-
-            if ch == ' ':
-                # 지면에 있으면 시동 토글, 공중에 있으면 급정지 브레이크
-                if self.current_alt_enu < 0.25:
-                    if not self.is_armed:
-                        print("\r\n⚡ [시동] 시동(Arm) 인가 중... 모터 아이들링 시작!\r")
-                        self.set_arm(True)
-                    else:
-                        print("\r\n🛑 [시동] 모터 시동 끄기(Disarm) 완료!\r")
-                        self.set_arm(False)
-                else:
-                    print("\r\n🛑 [급제동] 제자리 긴급 브레이크 호버링!\r")
-                    self.des_vx_body = self.cmd_vx_body = 0.0
-                    self.des_vy_body = self.cmd_vy_body = 0.0
-                    self.des_vz_body = self.cmd_vz_body = 0.0
-                    self.des_yaw_rate = self.cmd_yaw_rate = 0.0
-                    self.hold_x = self.current_x
-                    self.hold_y = self.current_y
-                    self.hold_z_ned = self.current_z_ned
-                    self.target_yaw = self.current_yaw
-            elif ch in ('t', 'T'):
-                print("\r\n🚀 [자동이륙] 목표 고도 2.0m 자동 수직 상승 시작!\r")
-                self.is_auto_takeoff = True
-                self.auto_takeoff_start_time = time.time()
+    def set_arm_toggle(self):
+        """Spacebar 시동 토글 (지면: 시동 On/Off, 공중: 브레이크)"""
+        if self.current_alt_enu < 0.35:
+            if not self.is_armed:
+                print("\r\n⚡ [시동] 시동(Arm) 인가 중... 모터 아이들링 시작!\r\n")
+                # 시동 걸기 및 Offboard 모드 즉시 활성화
+                self.send_vehicle_command(VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM, 1.0)
+                time.sleep(0.05)
+                self.send_vehicle_command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 1.0, 6.0)
+                self.flight_mode = "ARMED_READY"
                 self.hold_x = self.current_x
                 self.hold_y = self.current_y
-                self.target_yaw = self.current_yaw
-                self.set_arm(True)
-                self.set_mode_offboard_traj()
-            elif ch in ('l', 'L'):
-                self.set_land()
-            elif ch in ('r', 'R'):
-                self.set_rtl()
-            elif ch in ('e', 'E'):
-                self.set_emergency_kill()
-            elif ch == '1':
-                self.set_mode_posctl()
-            elif ch == '2':
-                self.set_mode_altctl()
-            elif ch == '3':
-                self.set_mode_offboard_traj()
-            elif ch == '4':
-                self.set_mode_offboard_rate()
+                self.hold_z_ned = self.current_z_ned
+            else:
+                print("\r\n🛑 [시동] 모터 시동 끄기(Disarm) 완료!\r\n")
+                self.send_vehicle_command(VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM, 0.0)
+                self.flight_mode = "DISARMED"
+        else:
+            print("\r\n🛑 [급제동] 제자리 긴급 브레이크 호버링!\r\n")
+            self.des_vx_body = self.cmd_vx_body = 0.0
+            self.des_vy_body = self.cmd_vy_body = 0.0
+            self.des_vz_body = self.cmd_vz_body = 0.0
+            self.des_yaw_rate = self.cmd_yaw_rate = 0.0
+            self.hold_x = self.current_x
+            self.hold_y = self.current_y
+            self.hold_z_ned = self.current_z_ned
+            self.target_yaw = self.current_yaw
+
+    def set_mode_posctl(self):
+        self.send_vehicle_command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 1.0, 3.0)
+        self.flight_mode = "POSCTL"
+        print("\r\n🎯 [모드 변경] Position Mode (GPS 제자리 호버링) 활성화!\r\n")
+
+    def set_mode_altctl(self):
+        self.send_vehicle_command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 1.0, 2.0)
+        self.flight_mode = "ALTCTL"
+        print("\r\n🎈 [모드 변경] Altitude Mode (고도 유지 & 수평 수동 흐름) 활성화!\r\n")
+
+    def set_mode_offboard_traj(self):
+        self.send_vehicle_command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 1.0, 6.0)
+        self.flight_mode = "OFFBOARD_TRAJ"
+        print("\r\n🚀 [모드 변경] Offboard Trajectory Mode (상위 플래너 자율비행) 활성화!\r\n")
+
+    def set_mode_offboard_rate(self):
+        self.send_vehicle_command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 1.0, 6.0)
+        self.flight_mode = "OFFBOARD_RATE"
+        print("\r\n⚡ [모드 변경] Offboard Rate Mode (OMMPC 고속 각속도 제어) 활성화!\r\n")
+
+    def set_land(self):
+        self.send_vehicle_command(VehicleCommand.VEHICLE_CMD_NAV_LAND)
+        self.flight_mode = "LAND"
+        print("\r\n🛬 [명령] 자동 착륙(Land) 시작...\r\n")
+
+    def set_rtl(self):
+        self.send_vehicle_command(VehicleCommand.VEHICLE_CMD_NAV_RETURN_TO_LAUNCH)
+        self.flight_mode = "RTL"
+        print("\r\n🏠 [명령] 홈 복귀(RTL) 시작...\r\n")
+
+    def set_emergency_kill(self):
+        self.send_vehicle_command(VehicleCommand.VEHICLE_CMD_DO_FLIGHTTERMINATION, 1.0)
+        print("\r\n🚨🚨 [EMERGENCY KILL] 모터 전원이 강제 차단되었습니다! 🚨🚨\r\n")
+
+    def handle_key_command(self, ch: str):
+        """단축키 입력 처리"""
+        if ch == ' ':
+            self.set_arm_toggle()
+        elif ch in ('t', 'T'):
+            print("\r\n🚀 [자동이륙] 목표 고도 2.0m 자동 수직 상승 시작!\r\n")
+            self.is_auto_takeoff = True
+            self.auto_takeoff_start_time = time.time()
+            self.hold_x = self.current_x
+            self.hold_y = self.current_y
+            self.target_yaw = self.current_yaw
+            self.send_vehicle_command(VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM, 1.0)
+            time.sleep(0.05)
+            self.send_vehicle_command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 1.0, 6.0)
+            self.flight_mode = "OFFBOARD_TRAJ"
+        elif ch in ('l', 'L'):
+            self.set_land()
+        elif ch in ('r', 'R'):
+            self.set_rtl()
+        elif ch in ('e', 'E'):
+            self.set_emergency_kill()
+        elif ch == '1':
+            self.set_mode_posctl()
+        elif ch == '2':
+            self.set_mode_altctl()
+        elif ch == '3':
+            self.set_mode_offboard_traj()
+        elif ch == '4':
+            self.set_mode_offboard_rate()
 
     def _update_stick_inputs(self):
         """다중 키보드 입력으로부터 바디 속도 목표값(des_*) 산출"""
@@ -535,14 +501,13 @@ class ZAVFlightManager(Node):
         dt = min(0.1, max(0.005, now - self.last_loop_time))
         self.last_loop_time = now
 
-        # 1. 단축키 및 방향키 입력 감지
-        self._poll_single_keys()
+        # 다중 키 상태 갱신
         self._update_stick_inputs()
 
-        # 2. 자동 2m 이륙(T) 모드 시퀀스 처리
+        # 자동 2m 이륙 시퀀스
         if self.is_auto_takeoff:
             if self.current_alt_enu >= 1.8 or (now - self.auto_takeoff_start_time > 8.0):
-                print(f"\r\n✨ 자동 2.0m 이륙 완료! (현재 고도: {self.current_alt_enu:.2f}m) -> 수동/자율 조종 가능!\r")
+                print(f"\r\n✨ 자동 2.0m 이륙 완료! (현재 고도: {self.current_alt_enu:.2f}m) -> 수동/자율 조종 가능!\r\n")
                 self.is_auto_takeoff = False
                 self.hold_z_ned = -2.0
             else:
@@ -555,9 +520,8 @@ class ZAVFlightManager(Node):
                 self.traj_setpoint_pub.publish(sp)
                 return
 
-        # 3. 비행 모드에 따른 분기 제어
+        # 비행 모드에 따른 분기 제어
         if self.flight_mode == "OFFBOARD_RATE":
-            # [모드 4: OMMPC 각속도/추력 직결 모드]
             self._publish_offboard_heartbeat(pos_vel=False, body_rate=True)
             rate_sp = VehicleRatesSetpoint()
             rate_sp.timestamp = 0
@@ -565,33 +529,28 @@ class ZAVFlightManager(Node):
                 rate_sp.roll = float(self.ext_cmd_rate.angular.x)
                 rate_sp.pitch = float(self.ext_cmd_rate.angular.y)
                 rate_sp.yaw = float(self.ext_cmd_rate.angular.z)
-                rate_sp.thrust_body[2] = float(-self.ext_cmd_rate.linear.z)  # NED Z축 추력
+                rate_sp.thrust_body[2] = float(-self.ext_cmd_rate.linear.z)
             else:
                 rate_sp.roll = 0.0
                 rate_sp.pitch = 0.0
                 rate_sp.yaw = 0.0
-                rate_sp.thrust_body[2] = -0.58  # 호버링 기본 추력 유지
+                rate_sp.thrust_body[2] = -0.58
             self.rate_setpoint_pub.publish(rate_sp)
 
-        elif self.flight_mode in ("OFFBOARD_TRAJ", "MANUAL_HOLD"):
-            # [모드 3 또는 기본 수동 텔레옵 모드: 위치/속도 제어]
+        else:
+            # 기본 Offboard Trajectory 및 수동 속도 제어
             self._publish_offboard_heartbeat(pos_vel=True, body_rate=False)
 
-            # 상위 플래너(/zav/cmd_vel) 명령이 최근에 들어왔는지 확인 (우선권 부여)
             use_external_vel = (self.ext_cmd_vel is not None) and (now - self.last_ext_vel_time < 0.3)
-
-            # 키보드 입력이 있으면 조종사 우선 (Safety Interlock)
             key_active = (abs(self.des_vx_body) > 0.01 or abs(self.des_vy_body) > 0.01 or
                           abs(self.des_vz_body) > 0.01 or abs(self.des_yaw_rate) > 0.01)
 
             if key_active or not use_external_vel:
-                # 조종사 수동 스틱 가감속 적용
                 self.cmd_vx_body = ramp_value(self.cmd_vx_body, self.des_vx_body, self.accel_xy, self.decel_xy, dt)
                 self.cmd_vy_body = ramp_value(self.cmd_vy_body, self.des_vy_body, self.accel_xy, self.decel_xy, dt)
                 self.cmd_vz_body = ramp_value(self.cmd_vz_body, self.des_vz_body, self.accel_z, self.decel_z, dt)
                 self.cmd_yaw_rate = ramp_value(self.cmd_yaw_rate, self.des_yaw_rate, self.accel_yaw, self.decel_yaw, dt)
             else:
-                # 상위 플래너 명령 그대로 패스스루
                 self.cmd_vx_body = self.ext_cmd_vel.linear.x
                 self.cmd_vy_body = self.ext_cmd_vel.linear.y
                 self.cmd_vz_body = self.ext_cmd_vel.linear.z
@@ -607,31 +566,25 @@ class ZAVFlightManager(Node):
                 vx_eff = self.cmd_vx_body
                 vy_eff = self.cmd_vy_body
 
-            # Yaw 헤딩 갱신
             if abs(self.cmd_yaw_rate) > 0.01:
                 self.target_yaw = wrap_pi(self.current_yaw + self.cmd_yaw_rate * 0.15)
 
-            # -------------------------------------------------------------
-            # [실시간 3차원 좌표계 변환 (Body FLU -> World NED)]
-            # -------------------------------------------------------------
+            # 실시간 3차원 좌표계 변환 (Body FLU -> World NED)
             psi = self.target_yaw if self.yaw_initialized else self.current_yaw
             vn = vx_eff * math.cos(psi) - vy_eff * math.sin(psi)
             ve = vx_eff * math.sin(psi) + vy_eff * math.cos(psi)
-            vd = -self.cmd_vz_body  # 상승(vz > 0) -> NED 하강 음수(vd < 0)
+            vd = -self.cmd_vz_body
 
             sp = TrajectorySetpoint()
             sp.timestamp = 0
 
-            # 조종 입력이 완전히 멈춘 경우: 위치 홀드(Position Hold) 고정
             is_moving = (abs(vx_eff) > 0.02 or abs(vy_eff) > 0.02 or
                          abs(self.cmd_vz_body) > 0.02 or abs(self.cmd_yaw_rate) > 0.02)
 
             if not is_moving and self.current_alt_enu > 0.2:
-                # 제자리 위치 유지
                 sp.position = [float('nan'), float('nan'), float('nan')]
                 sp.velocity = [0.0, 0.0, 0.0]
             else:
-                # 속도 추종
                 sp.position = [float('nan'), float('nan'), float('nan')]
                 sp.velocity = [float(vn), float(ve), float(vd)]
 
@@ -640,40 +593,48 @@ class ZAVFlightManager(Node):
             sp.yawspeed = float(self.cmd_yaw_rate)
             self.traj_setpoint_pub.publish(sp)
 
-        # 4. 실시간 대시보드 상태 출력 (0.08초 간격)
-        if now - self.last_print_time > 0.08:
+        # 실시간 상태 덮어쓰기 출력 (ANSI \033[K로 깨끗하게 덮어쓰기)
+        if now - self.last_print_time > 0.09:
             self.last_print_time = now
             arm_str = "🟢 시동(Armed)" if self.is_armed else "🔴 정지(Disarmed)"
             mode_str = self.flight_mode
             v_xy = math.hypot(self.cmd_vx_body, self.cmd_vy_body)
-            print(
-                f"\r[{arm_str}] [{mode_str:13s}] "
+            # 줄 바꿈 없이 현재 줄 전체를 덮어쓰기 (\r\033[K)
+            sys.stdout.write(
+                f"\r\033[K[{arm_str}] [{mode_str:13s}] "
                 f"고도:{self.current_alt_enu:5.2f}m | "
                 f"속도:XY {v_xy:4.1f}m/s, Z {self.cmd_vz_body:+4.1f}m/s | "
-                f"헤딩:{math.degrees(self.current_yaw):+6.1f}°   ",
-                end='', flush=True
+                f"헤딩:{math.degrees(self.current_yaw):+6.1f}°"
             )
+            sys.stdout.flush()
 
     def destroy_node(self):
-        if self.orig_term_settings:
-            try:
-                termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self.orig_term_settings)
-            except Exception:
-                pass
-        self.multi_key.terminate()
+        self.multi_key.stop()
         super().destroy_node()
 
 
 def main(args=None):
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
     rclpy.init(args=args)
     node = ZAVFlightManager()
+
     try:
-        rclpy.spin(node)
+        tty.setraw(fd, termios.TCSANOW)
+        while rclpy.ok():
+            rclpy.spin_once(node, timeout_sec=0.005)
+            ch = read_key_nonblocking(fd)
+            if ch != '':
+                if ch in ('\x03', '\x1a'):  # Ctrl+C or Ctrl+Z
+                    break
+                node.handle_key_command(ch)
     except KeyboardInterrupt:
-        print("\r\n[종료] ZAV Flight Manager를 안전하게 종료합니다...\r")
+        pass
     finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
         node.destroy_node()
         rclpy.shutdown()
+        print("\n\n✅ ZAV Flight Manager가 안전하게 종료되었습니다.")
 
 
 if __name__ == '__main__':
