@@ -310,14 +310,16 @@ class ZAVFlightManager(Node):
         print(" [단축키 안내]")
         print("   - [Spacebar] : 시동 켜기/끄기 (Arm / Disarm 토글)")
         print("   - [T]        : 자동 2.0m 이륙 (Auto Takeoff)")
-        print("   - [1]        : 수동 위치 모드 (MANUAL_POS - 키 떼면 PX4 자체 자동 호버링)")
+        print("   - [1]        : 수동 위치 모드 (MANUAL_POS - 키 떼면 PX4 자동 호버링)")
+        print("   - [2]        : 수동 고도 모드 (ALTCTL - 고도 유지 & 수평 관성 비행)")
         print("   - [3]        : 외부 자율 속도 모드 (OFFBOARD_TRAJ - 키보드 이동 차단 ⛔)")
         print("   - [4]        : 외부 자율 각속도 모드 (OFFBOARD_RATE - OMMPC 등 연동 ⛔)")
         print("   - [L]        : 자동 착륙 (Land)")
         print("   - [R]        : 홈 복귀 (Return-To-Launch)")
         print("   - [E]        : 비상 모터 강제 전원 차단 (Emergency Kill)")
+        print("   - [Q / Ctrl+C]: 노드 안전 종료")
         print(" ----------------------------------------------------------------------------")
-        print(" [수동 조종키 안내 (MANUAL_POS 모드에서만 작동)]")
+        print(" [수동 조종키 안내 (1번 및 2번 수동 모드에서 작동)]")
         print("   - [ ↑ / ↓ ]  : 전진(Forward) / 후진(Backward)")
         print("   - [ ← / → ]  : 좌측이동(Left) / 우측이동(Right)")
         print("   - [ W / S ]  : 상승(Up) / 하강(Down)")
@@ -378,6 +380,10 @@ class ZAVFlightManager(Node):
         self.flight_mode = "MANUAL_POS"
         print("\r\n🎯 [모드 변경] 수동 위치 모드 (MANUAL_POS: 키 떼면 PX4 자동 호버링 정지)!\r\n")
 
+    def set_mode_altctl(self):
+        self.flight_mode = "ALTCTL"
+        print("\r\n🎈 [모드 변경] 수동 고도 모드 (ALTCTL: 고도 고정 & 수평 관성 비행)!\r\n")
+
     def set_mode_offboard_traj(self):
         self.flight_mode = "OFFBOARD_TRAJ"
         print("\r\n🚀 [모드 변경] Offboard Trajectory Mode (상위 플래너 자율비행, 키보드 이동 완전 차단 ⛔)!\r\n")
@@ -423,10 +429,15 @@ class ZAVFlightManager(Node):
             self.set_emergency_kill()
         elif ch == '1':
             self.set_mode_manual()
+        elif ch == '2':
+            self.set_mode_altctl()
         elif ch == '3':
             self.set_mode_offboard_traj()
         elif ch == '4':
             self.set_mode_offboard_rate()
+        elif ch in ('q', 'Q', '\x03'):
+            return False
+        return True
 
     def _update_stick_inputs(self):
         """키보드 입력을 가상 조종기 스틱의 목표치(Target)로 변환"""
@@ -574,13 +585,17 @@ class ZAVFlightManager(Node):
 
             self.traj_setpoint_pub.publish(sp)
 
-        # [케이스 D] 모드 1: MANUAL_POS (키보드 수동 조종 - 스틱 모사)
+        # [케이스 D] 모드 1: MANUAL_POS (키보드 수동 조종 - 스틱 모사) 및 모드 2: ALTCTL
         else:
             self._publish_offboard_heartbeat(velocity_mode=True, body_rate_mode=False)
 
             # 1. 스틱 스프링 복귀 필터 적용 (Input Shaping)
-            self.out_vx_body = ramp_stick_value(self.out_vx_body, self.target_vx_body, self.stick_push_xy, self.stick_return_xy, dt)
-            self.out_vy_body = ramp_stick_value(self.out_vy_body, self.target_vy_body, self.stick_push_xy, self.stick_return_xy, dt)
+            # 모드 1(MANUAL_POS): return_rate=7.0 m/s^2 (키 떼면 즉시 0 복귀 -> PX4 제동 및 호버링)
+            # 모드 2(ALTCTL): return_rate=0.35 m/s^2 (키 떼도 스르륵 미끄러지며 관성 비행 유지)
+            cur_return_xy = 0.35 if self.flight_mode == "ALTCTL" else self.stick_return_xy
+
+            self.out_vx_body = ramp_stick_value(self.out_vx_body, self.target_vx_body, self.stick_push_xy, cur_return_xy, dt)
+            self.out_vy_body = ramp_stick_value(self.out_vy_body, self.target_vy_body, self.stick_push_xy, cur_return_xy, dt)
             self.out_vz_body = ramp_stick_value(self.out_vz_body, self.target_vz_body, self.stick_push_z, self.stick_return_z, dt)
             self.out_yaw_rate = ramp_stick_value(self.out_yaw_rate, self.target_yaw_rate, self.stick_push_yaw, self.stick_return_yaw, dt)
 
@@ -594,14 +609,14 @@ class ZAVFlightManager(Node):
                 vx_eff = self.out_vx_body
                 vy_eff = self.out_vy_body
 
-            # 2. 3차원 좌표계 회전 변환 (FLU Body -> NED World)
+            # 2. 3차원 좌표계 회전 변환 (기존 검증된 teleop_keyboard.py 수식으로 100% 원복)
             # 수식:
-            # vn = vx * cos(psi) - vy * sin(psi)
-            # ve = vx * sin(psi) + vy * cos(psi)
+            # vn = vx * cos(psi) + vy * sin(psi)
+            # ve = vx * sin(psi) - vy * cos(psi)
             # vd = -vz
             psi = self.current_yaw
-            vn = vx_eff * math.cos(psi) - vy_eff * math.sin(psi)
-            ve = vx_eff * math.sin(psi) + vy_eff * math.cos(psi)
+            vn = vx_eff * math.cos(psi) + vy_eff * math.sin(psi)
+            ve = vx_eff * math.sin(psi) - vy_eff * math.cos(psi)
             vd = -self.out_vz_body  # 상승(+vz)은 NED에서 음수(-vd)
 
             # 3. PX4 TrajectorySetpoint 생성 및 퍼블리시
@@ -653,9 +668,8 @@ def main(args=None):
             rclpy.spin_once(node, timeout_sec=0.005)
             ch = read_key_nonblocking(fd)
             if ch != '':
-                if ch in ('\x03', '\x1a'):  # Ctrl+C, Ctrl+Z
+                if not node.handle_key_command(ch):
                     break
-                node.handle_key_command(ch)
     except KeyboardInterrupt:
         pass
     finally:
