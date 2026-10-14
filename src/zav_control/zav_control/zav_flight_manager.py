@@ -68,6 +68,7 @@ from geometry_msgs.msg import Twist
 from px4_msgs.msg import (
     OffboardControlMode,
     TrajectorySetpoint,
+    VehicleAttitudeSetpoint,
     VehicleRatesSetpoint,
     VehicleCommand,
     VehicleStatus,
@@ -93,6 +94,22 @@ def wrap_pi(angle: float) -> float:
     while angle < -math.pi:
         angle += 2.0 * math.pi
     return angle
+
+
+def euler_to_quaternion(roll: float, pitch: float, yaw: float):
+    """오일러 각도(Roll, Pitch, Yaw)를 PX4 쿼터니언 [w, x, y, z]로 변환"""
+    cy = math.cos(yaw * 0.5)
+    sy = math.sin(yaw * 0.5)
+    cp = math.cos(pitch * 0.5)
+    sp = math.sin(pitch * 0.5)
+    cr = math.cos(roll * 0.5)
+    sr = math.sin(roll * 0.5)
+
+    w = cr * cp * cy + sr * sp * sy
+    x = sr * cp * cy - cr * sp * sy
+    y = cr * sp * cy + sr * cp * sy
+    z = cr * cp * sy - sr * sp * cy
+    return [float(w), float(x), float(y), float(z)]
 
 
 def ramp_stick_value(current: float, target: float, push_rate: float, return_rate: float, dt: float) -> float:
@@ -229,11 +246,16 @@ class ZAVFlightManager(Node):
             depth=1
         )
 
-        # 1. PX4 제어 인터페이스 퍼블리셔
+        # 1. PX4 제어 인터페이스 퍼블리셔 (각 제어 레벨별 물리적 완전 분리)
         self.cmd_pub = self.create_publisher(VehicleCommand, '/fmu/in/vehicle_command', qos_pub)
         self.offboard_mode_pub = self.create_publisher(OffboardControlMode, '/fmu/in/offboard_control_mode', qos_pub)
         self.traj_setpoint_pub = self.create_publisher(TrajectorySetpoint, '/fmu/in/trajectory_setpoint', qos_pub)
+        self.attitude_setpoint_pub = self.create_publisher(VehicleAttitudeSetpoint, '/fmu/in/vehicle_attitude_setpoint', qos_pub)
         self.rate_setpoint_pub = self.create_publisher(VehicleRatesSetpoint, '/fmu/in/vehicle_rates_setpoint', qos_pub)
+
+        # 2번 Altitude Mode 전용 순수 자세(Attitude) 파라미터
+        self.max_tilt_angle = math.radians(18.0)  # 최대 틸트 기울기: 18.0도
+        self.hover_thrust = 0.24                 # SITL 호버링 기준 추력 (Normal 0.24)
 
         # 2. PX4 상태 피드백 구독자
         self.create_subscription(VehicleStatus, '/fmu/out/vehicle_status', self._on_vehicle_status, qos_sub)
@@ -495,14 +517,14 @@ class ZAVFlightManager(Node):
         else:
             self.target_yaw_rate = 0.0
 
-    def _publish_offboard_heartbeat(self, velocity_mode=True, body_rate_mode=False):
-        """PX4 OffboardControlMode 하트비트 전송 (속도 제어 모드 정확 선언)"""
+    def _publish_offboard_heartbeat(self, velocity_mode=False, attitude_mode=False, body_rate_mode=False):
+        """PX4 OffboardControlMode 하트비트 전송 (각 모드별 물리적 제어 레벨 선언)"""
         mode = OffboardControlMode()
         mode.timestamp = self.get_clock().now().nanoseconds // 1000
         mode.position = False
         mode.velocity = velocity_mode
         mode.acceleration = False
-        mode.attitude = False
+        mode.attitude = attitude_mode
         mode.body_rate = body_rate_mode
         self.offboard_mode_pub.publish(mode)
 
@@ -586,11 +608,63 @@ class ZAVFlightManager(Node):
 
             self.traj_setpoint_pub.publish(sp)
 
-        # [케이스 D] 모드 1: MANUAL_POS (키보드 수동 조종 - 스틱 모사) 및 모드 2: ALTCTL
-        else:
-            self._publish_offboard_heartbeat(velocity_mode=True, body_rate_mode=False)
+        # [케이스 D] 모드 2: ALTCTL (진짜 순정 고도 모드: 위치 제어기 완전 Bypass, VehicleAttitudeSetpoint 직접 제어!)
+        elif self.flight_mode == "ALTCTL":
+            self._publish_offboard_heartbeat(attitude_mode=True)
 
-            # 1. 스틱 선형 가감속 계산 (인위적인 가짜 감속 완전 제거, teleop_keyboard.py와 동일하게 복원)
+            # 1. 스틱 선형 가감속 계산 (반대타 칼같이 즉각 반응)
+            self.out_vx_body = ramp_stick_value(self.out_vx_body, self.target_vx_body, self.stick_push_xy, self.stick_return_xy, dt)
+            self.out_vy_body = ramp_stick_value(self.out_vy_body, self.target_vy_body, self.stick_push_xy, self.stick_return_xy, dt)
+            self.out_vz_body = ramp_stick_value(self.out_vz_body, self.target_vz_body, self.stick_push_z, self.stick_return_z, dt)
+            self.out_yaw_rate = ramp_stick_value(self.out_yaw_rate, self.target_yaw_rate, self.stick_push_yaw, self.stick_return_yaw, dt)
+
+            # 2. 키 입력을 순수 기체 틸트 각도(Roll/Pitch)로 직접 매핑
+            # 전진(+vx): 기수를 앞으로 숙임 (pitch < 0)
+            # 후진(-vx): 기수를 뒤로 젖힘 (pitch > 0)
+            # 좌측(+vy): 기체를 좌측으로 기울임 (roll < 0)
+            # 우측(-vy): 기체를 우측으로 기울임 (roll > 0)
+            pitch_cmd = - (self.out_vx_body / self.max_speed_xy) * self.max_tilt_angle
+            roll_cmd  = - (self.out_vy_body / self.max_speed_xy) * self.max_tilt_angle
+
+            # Yaw 회전 적분
+            if abs(self.out_yaw_rate) > 0.01:
+                self.target_yaw = wrap_pi(self.target_yaw + self.out_yaw_rate * dt)
+
+            # 3. 오일러 각도 -> 쿼터니언 변환
+            q_d = euler_to_quaternion(roll_cmd, pitch_cmd, self.target_yaw)
+
+            # 4. 수직 추력 제어 (기본 호버링 추력 유지, W/S 키로 상승/하강 추력 가감)
+            if self.out_vz_body > 0.1:
+                thrust = self.hover_thrust + 0.15  # W 누르면 상승
+            elif self.out_vz_body < -0.1:
+                thrust = max(0.10, self.hover_thrust - 0.12)  # S 누르면 하강
+            else:
+                thrust = self.hover_thrust  # 손 떼면 호버링 추력
+
+            # 5. VehicleAttitudeSetpoint 메시지 생성 및 퍼블리시
+            att_sp = VehicleAttitudeSetpoint()
+            att_sp.timestamp = self.get_clock().now().nanoseconds // 1000
+            att_sp.q_d = q_d
+            att_sp.thrust_body = [0.0, 0.0, float(-thrust)]
+            att_sp.yaw_sp_move_rate = float(self.out_yaw_rate)
+            self.attitude_setpoint_pub.publish(att_sp)
+
+            # 실시간 자세 상태 출력 (조작 중에만 출력)
+            is_moving_now = (abs(roll_cmd) > 0.01) or (abs(pitch_cmd) > 0.01) or (abs(self.out_vz_body) > 0.02) or (abs(self.out_yaw_rate) > 0.02)
+            if (is_moving_now or self.was_moving) and (now - self.last_print_time > 0.08):
+                self.last_print_time = now
+                self.was_moving = is_moving_now
+                print(
+                    f"\r🎈 [ALT-자세] Roll:{math.degrees(roll_cmd):+5.1f}° | Pitch:{math.degrees(pitch_cmd):+5.1f}° | "
+                    f"추력:{thrust:4.2f} | 헤딩:{math.degrees(self.current_yaw):+6.1f}°   ",
+                    end='', flush=True
+                )
+
+        # [케이스 E] 모드 1: MANUAL_POS (수동 위치 모드: TrajectorySetpoint 속도/위치 제어)
+        else:
+            self._publish_offboard_heartbeat(velocity_mode=True)
+
+            # 1. 스틱 선형 가감속 계산
             self.out_vx_body = ramp_stick_value(self.out_vx_body, self.target_vx_body, self.stick_push_xy, self.stick_return_xy, dt)
             self.out_vy_body = ramp_stick_value(self.out_vy_body, self.target_vy_body, self.stick_push_xy, self.stick_return_xy, dt)
             self.out_vz_body = ramp_stick_value(self.out_vz_body, self.target_vz_body, self.stick_push_z, self.stick_return_z, dt)
@@ -606,23 +680,19 @@ class ZAVFlightManager(Node):
                 vx_eff = self.out_vx_body
                 vy_eff = self.out_vy_body
 
-            # 실시간 속도 상태 출력 (teleop_keyboard.py 원래 방식 복원: 조작 중에만 실시간 스틱 속도 출력!)
+            # 실시간 속도 상태 출력 (조작 중에만 실시간 스틱 속도 출력!)
             is_moving_now = (vel_xy_norm > 0.02) or (abs(self.out_vz_body) > 0.02) or (abs(self.out_yaw_rate) > 0.02)
             if (is_moving_now or self.was_moving) and (now - self.last_print_time > 0.08):
                 self.last_print_time = now
                 self.was_moving = is_moving_now
                 print(
-                    f"\r🎮 [스틱] 수평:{vel_xy_norm:4.1f}m/s (전후:{vx_eff:+5.1f}, 좌우:{vy_eff:+5.1f}) | "
+                    f"\r🎮 [POS-속도] 수평:{vel_xy_norm:4.1f}m/s (전후:{vx_eff:+5.1f}, 좌우:{vy_eff:+5.1f}) | "
                     f"수직:{self.out_vz_body:+4.1f}m/s | "
                     f"Yaw:{math.degrees(self.out_yaw_rate):+5.1f}°/s (헤딩:{math.degrees(self.current_yaw):+6.1f}°)   ",
                     end='', flush=True
                 )
 
             # 2. 3차원 좌표계 회전 변환 (기존 검증된 teleop_keyboard.py 수식으로 100% 원복)
-            # 수식:
-            # vn = vx * cos(psi) + vy * sin(psi)
-            # ve = vx * sin(psi) - vy * cos(psi)
-            # vd = -vz
             psi = self.current_yaw
             vn = vx_eff * math.cos(psi) + vy_eff * math.sin(psi)
             ve = vx_eff * math.sin(psi) - vy_eff * math.cos(psi)
