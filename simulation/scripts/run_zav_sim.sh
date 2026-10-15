@@ -71,14 +71,14 @@ if grep -qi microsoft /proc/version 2>/dev/null && [ -f "$CLIP_BIN" ]; then
     tmux bind-key -t $SESSION_NAME -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "$CLIP_BIN" 2>/dev/null || true
 fi
 
-# 5. 상단 팬 (Pane 0): PX4 SITL 실행 (Ctrl+C 시 tmux kill-session 연쇄 실행으로 즉시 폭파)
+# 5. 상단 팬 (Pane 0): PX4 SITL 실행 (Ctrl+C 시 trap으로 tmux 세션 즉시 폭파)
 tmux select-pane -t $SESSION_NAME:0.0 -T "🔴 [상단] PX4 비행 콘솔 (종료: Ctrl+C)"
-tmux send-keys -t $SESSION_NAME:0.0 "cd ~/PX4-Autopilot && make px4_sitl isaac_zav; tmux kill-session -t $SESSION_NAME" C-m
+tmux send-keys -t $SESSION_NAME:0.0 "trap 'tmux kill-session -t $SESSION_NAME 2>/dev/null' INT TERM EXIT; cd ~/PX4-Autopilot && make px4_sitl isaac_zav; tmux kill-session -t $SESSION_NAME 2>/dev/null" C-m
 
 # 6. 하단 팬 (Pane 1): 40% 크기로 분할 후 Isaac Sim 기동
 echo " [3/3] Pegasus / Isaac Sim 3D 뷰어 연결 중..."
 tmux split-window -v -p 40 -t $SESSION_NAME:0.0
-tmux select-pane -t $SESSION_NAME:0.1 -T "🟢 [하단] Pegasus / Isaac Sim 파이썬 로그"
+tmux select-pane -t $SESSION_NAME:0.1 -T "🟢 [하단] Pegasus / Isaac Sim 파이썬 로그 (종료: Ctrl+C)"
 
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     RUNNER_SCRIPT="$SCRIPT_DIR/run_isaac_sim.sh"
@@ -86,7 +86,7 @@ tmux select-pane -t $SESSION_NAME:0.1 -T "🟢 [하단] Pegasus / Isaac Sim 파�
         RUNNER_SCRIPT="$HOME/zenith_ws/simulation/scripts/run_isaac_sim.sh"
     fi
     chmod +x "$RUNNER_SCRIPT"
-    tmux send-keys -t $SESSION_NAME:0.1 "$RUNNER_SCRIPT" C-m
+    tmux send-keys -t $SESSION_NAME:0.1 "trap 'tmux kill-session -t $SESSION_NAME 2>/dev/null' INT TERM EXIT; $RUNNER_SCRIPT; tmux kill-session -t $SESSION_NAME 2>/dev/null" C-m
 
 # 7. 상단 콘솔로 포커스 맞추고 대시보드 화면으로 전환
 tmux select-pane -t $SESSION_NAME:0.0

@@ -14,6 +14,8 @@
 SESSION_NAME="zav_sim"
 ISAAC_LOG="/tmp/zav_isaac_sim.log"
 
+trap 'tmux kill-session -t "$SESSION_NAME" 2>/dev/null; exit 0' INT TERM
+
 echo " [Isaac Sim] PX4 SITL 네트워크 소켓(TCP 4560) 대기 중 (3초)..."
 sleep 3
 
