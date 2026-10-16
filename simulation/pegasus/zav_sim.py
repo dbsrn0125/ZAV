@@ -24,22 +24,8 @@ import sys
 # Isaac Sim 내장 ROS 2 Bridge (humble) 구동에 필요한 환경변수 및 DLL 경로 자동 설정
 os.environ.setdefault("ROS_DISTRO", "humble")
 os.environ.setdefault("RMW_IMPLEMENTATION", "rmw_fastrtps_cpp")
-# Windows-WSL2 간 대용량 PointCloud2 패킷 유실("A message was lost!!!") 방지를 위한 UDPv4 전용 FastDDS 프로파일 등록
-_fastdds_xml = os.path.abspath(
-    os.path.join(
-        os.path.dirname(__file__),
-        "..",
-        "extensions",
-        "pegasus.simulator",
-        "pegasus",
-        "simulator",
-        "logic",
-        "graphical_sensors",
-        "fastdds_udp_only.xml",
-    )
-)
-if os.path.isfile(_fastdds_xml):
-    os.environ.setdefault("FASTRTPS_DEFAULT_PROFILES_FILE", _fastdds_xml)
+os.environ["ROS_DOMAIN_ID"] = "0"
+os.environ["ROS_LOCALHOST_ONLY"] = "0"
 
 if sys.platform == "win32":
     _isaac_path = os.environ.get("ISAAC_PATH", "")

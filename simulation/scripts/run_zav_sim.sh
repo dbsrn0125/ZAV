@@ -15,7 +15,6 @@ TASKKILL_BIN="/mnt/c/Windows/System32/taskkill.exe"
 CLIP_BIN="/mnt/c/Windows/System32/clip.exe"
 
 if grep -qi microsoft /proc/version 2>/dev/null && [ -f "$HOME/zenith_ws/simulation/pegasus/fastdds_udp_only.xml" ]; then
-    export FASTRTPS_DEFAULT_PROFILES_FILE="$HOME/zenith_ws/simulation/pegasus/fastdds_udp_only.xml"
 fi
 SESSION_NAME="zav_sim"
 ISAAC_LOG="/tmp/zav_isaac_sim.log"

@@ -97,7 +97,7 @@ class Mid360s(GraphicalSensor):
 
         self._frequency = int(round(frequency))
         self._ros2_publish = config.get("ros2_publish", True)
-        self._full_scan = config.get("full_scan", True)
+        self._full_scan = config.get("full_scan", False)
         self._topic_name = config.get("topic_name", "/livox/lidar")
         self._frame_id = config.get("frame_id", "livox_frame")
         self._show_render = config.get("show_render", False)
@@ -119,10 +119,8 @@ class Mid360s(GraphicalSensor):
         ros_distro = os.environ.get("ROS_DISTRO") or "humble"
         os.environ["ROS_DISTRO"] = ros_distro
         os.environ.setdefault("RMW_IMPLEMENTATION", "rmw_fastrtps_cpp")
-
-        udp_xml = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fastdds_udp_only.xml")
-        if os.path.isfile(udp_xml):
-            os.environ["FASTRTPS_DEFAULT_PROFILES_FILE"] = udp_xml
+        os.environ["ROS_DOMAIN_ID"] = "0"
+        os.environ["ROS_LOCALHOST_ONLY"] = "0"
 
         ext_path = None
         try:
