@@ -8,7 +8,8 @@
 #   3. Isaac Sim 내장 ROS 2 Bridge (humble, rmw_fastrtps_cpp) 라이브러리 경로 자동 로드
 #   4. Windows 호스트의 Isaac Sim 실행 시 wslpath -m (포워드 슬래시 /) 변환을 통해
 #      백슬래시(\) 이스케이프 왜곡 및 UNC 경로 해석 오류 원천 방지
-#   5. 실시간 에러 로깅($ISAAC_LOG) 및 비정상 종료 시 대시보드 자동 닫힘 방지(read -n 1)
+#   5. cd /mnt/c 서브셸을 통한 cmd.exe 실행으로 CMD의 UNC 작업 디렉터리 경고 제거
+#   6. 실시간 에러 로깅($ISAAC_LOG) 및 비정상 종료 시 대시보드 자동 닫힘 방지(read -n 1)
 # ==============================================================================
 
 SESSION_NAME="zav_sim"
@@ -22,16 +23,17 @@ sleep 3
 if grep -qi microsoft /proc/version 2>/dev/null; then
     # --------------------------------------------------------------------------
     # [WSL2 환경]: Windows 호스트의 Isaac Sim 탐색 및 실행
+    # 원리:
+    #   1. wslpath -m 옵션을 사용하여 백슬래시(\) 이스케이프 왜곡 없이
+    #      표준 슬래시(/) 형태의 Windows / UNC 경로로 변환
+    #   2. cd /mnt/c 서브셸에서 cmd.exe를 실행하여 CMD의 UNC 작업 디렉터리 경고 회피
+    #   3. cmd.exe /c call "$WIN_ISAAC_BAT" "$WIN_SIM_SCRIPT" 로 안전하게 기동
+    #   4. Windows ROS 2 Bridge DLL 경로는 zav_sim.py 및 mid360s.py 내부에서 자동 설정됨
     # --------------------------------------------------------------------------
     WIN_ISAAC_BAT=""
-    WIN_ROS2_LIB=""
     for cand in "/mnt/c/isaac-sim/python.bat" "/mnt/c/issac-sim/python.bat" /mnt/c/Users/*/AppData/Local/ov/pkg/isaac*sim*/python.bat /mnt/c/Users/*/Desktop/*isaac*/python.bat; do
         if [ -f "$cand" ]; then
             WIN_ISAAC_BAT=$(wslpath -m "$cand")
-            cand_dir=$(dirname "$cand")
-            if [ -d "$cand_dir/exts/isaacsim.ros2.bridge/humble/lib" ]; then
-                WIN_ROS2_LIB=$(wslpath -w "$cand_dir/exts/isaacsim.ros2.bridge/humble/lib")
-            fi
             break
         fi
     done
@@ -49,11 +51,10 @@ if grep -qi microsoft /proc/version 2>/dev/null; then
     echo " [Isaac Sim] Windows Isaac Sim을 실행합니다..."
     echo "  - Python Batch: $WIN_ISAAC_BAT"
     echo "  - Sim Script:   $WIN_SIM_SCRIPT"
-    echo "  - ROS2 Bridge:  humble (rmw_fastrtps_cpp)"
     echo "----------------------------------------------------------"
 
     if [ -n "$WIN_ISAAC_BAT" ] && [ -n "$WIN_SIM_SCRIPT" ]; then
-        (cd /mnt/c && /mnt/c/Windows/System32/cmd.exe /c "set ROS_DISTRO=humble&& set RMW_IMPLEMENTATION=rmw_fastrtps_cpp&& set PATH=%PATH%;$WIN_ROS2_LIB&& call \"$WIN_ISAAC_BAT\" \"$WIN_SIM_SCRIPT\"") 2>&1 | tee "$ISAAC_LOG"
+        (cd /mnt/c && /mnt/c/Windows/System32/cmd.exe /c call "$WIN_ISAAC_BAT" "$WIN_SIM_SCRIPT") 2>&1 | tee "$ISAAC_LOG"
         EXIT_CODE=${PIPESTATUS[0]}
     else
         echo "⚠️ Windows Isaac Sim 또는 zav_sim.py 경로를 찾지 못했습니다. WSL 파이썬으로 대체 실행합니다."

@@ -107,6 +107,7 @@ if [ -d "$PEGASUS_DIR" ]; then
     mkdir -p "$VEHICLE_DIR" "$GRAPH_SENSORS_DIR" "$ASSET_DIR" "$EXAMPLE_DIR"
     cp "$SCRIPT_DIR/pegasus/zav_v1.py" "$VEHICLE_DIR/"
     cp "$SCRIPT_DIR/pegasus/mid360s.py" "$GRAPH_SENSORS_DIR/"
+    cp "$SCRIPT_DIR/pegasus/fastdds_udp_only.xml" "$GRAPH_SENSORS_DIR/"
     cp "$SCRIPT_DIR/pegasus/assets/ZAV_v1/ZAV_v1.usd" "$ASSET_DIR/"
     cp "$SCRIPT_DIR/pegasus/zav_sim.py" "$EXAMPLE_DIR/"
     echo -e "  - zav_v1.py (기체), mid360s.py (3D 라이다), ZAV_v1.usd (3D 모델), zav_sim.py 복사 완료"
@@ -213,6 +214,14 @@ echo -e "\n${YELLOW}[3/4] 2분할 대시보드 런처 및 bashrc 단축어 등�
 cp "$SCRIPT_DIR/scripts/run_zav_sim.sh" "$HOME/run_zav_sim.sh"
 cp "$SCRIPT_DIR/scripts/run_isaac_sim.sh" "$HOME/run_isaac_sim.sh"
 chmod +x "$HOME/run_zav_sim.sh" "$HOME/run_isaac_sim.sh"
+
+if grep -qi microsoft /proc/version 2>/dev/null; then
+    sed -i '/unset FASTRTPS_DEFAULT_PROFILES_FILE/d' "$HOME/.bashrc"
+    if ! grep -q "FASTRTPS_DEFAULT_PROFILES_FILE=.*fastdds_udp_only.xml" "$HOME/.bashrc"; then
+        echo "export FASTRTPS_DEFAULT_PROFILES_FILE=$SCRIPT_DIR/pegasus/fastdds_udp_only.xml" >> "$HOME/.bashrc"
+        echo -e "  - ~/.bashrc에 WSL2-Windows 간 UDP 전용 FastDDS 프로파일 등록 완료"
+    fi
+fi
 
 if ! grep -q "alias zav_sim=" "$HOME/.bashrc"; then
     echo "alias zav_sim='$HOME/run_zav_sim.sh'" >> "$HOME/.bashrc"

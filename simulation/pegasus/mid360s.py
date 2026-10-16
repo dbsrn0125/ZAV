@@ -113,10 +113,16 @@ class Mid360s(GraphicalSensor):
         """
         Windows 및 Linux 환경에서 isaacsim.ros2.bridge 확장이 내장 ROS 2(humble) 라이브러리를
         에러 없이 로드할 수 있도록 환경변수(ROS_DISTRO, RMW_IMPLEMENTATION, PATH/LD_LIBRARY_PATH)를 자동 설정합니다.
+        또한 Windows <-> WSL2 간 Shared Memory(SHM) 전송 실패("A message was lost!!!")를 방지하기 위해
+        UDPv4 전용 FastDDS 프로파일(fastdds_udp_only.xml)을 자동 바인딩합니다.
         """
         ros_distro = os.environ.get("ROS_DISTRO") or "humble"
         os.environ["ROS_DISTRO"] = ros_distro
         os.environ.setdefault("RMW_IMPLEMENTATION", "rmw_fastrtps_cpp")
+
+        udp_xml = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fastdds_udp_only.xml")
+        if os.path.isfile(udp_xml):
+            os.environ["FASTRTPS_DEFAULT_PROFILES_FILE"] = udp_xml
 
         ext_path = None
         try:
@@ -158,38 +164,43 @@ class Mid360s(GraphicalSensor):
             return
 
         num_channels = 40
-        elev_array = Vt.FloatArray(self.DEFAULT_ELEVATION_DEG)
-        zeros_f = Vt.FloatArray([0.0] * num_channels)
-        ones_f = Vt.FloatArray([1.0] * num_channels)
-        zeros_i = Vt.IntArray([0] * num_channels)
-        ones_u = Vt.UIntArray([1] * num_channels)
-        chan_ids = Vt.UIntArray(list(range(1, num_channels + 1)))
+        elev_list = [float(x) for x in self.DEFAULT_ELEVATION_DEG]
+        zeros_f = [0.0] * num_channels
+        ones_f = [1.0] * num_channels
+        zeros_u = [0] * num_channels
+        chan_ids = list(range(1, num_channels + 1))  # 1 ~ 40 (1-indexed, OmniLidar 규격)
 
         attrs = {
             # 스캔 주기 및 리포트 레이트 (10 Hz 회전, 초당 5000회 발사 * 40채널 = 200,000 pts/s)
-            "omni:sensor:Core:scanRateBaseHz": (Sdf.ValueTypeNames.Int, self._frequency),
-            "omni:sensor:Core:reportRateBaseHz": (Sdf.ValueTypeNames.Int, 5000),
-            "omni:sensor:Core:numberOfChannels": (Sdf.ValueTypeNames.Int, num_channels),
-            "omni:sensor:Core:numberOfEmitters": (Sdf.ValueTypeNames.Int, num_channels),
+            "omni:sensor:Core:scanRateBaseHz": (Sdf.ValueTypeNames.UInt, self._frequency),
+            "omni:sensor:Core:reportRateBaseHz": (Sdf.ValueTypeNames.UInt, 5000),
+            "omni:sensor:Core:numberOfChannels": (Sdf.ValueTypeNames.UInt, num_channels),
+            "omni:sensor:Core:numberOfEmitters": (Sdf.ValueTypeNames.UInt, num_channels),
             # 측정 거리 및 반사율 특성 (최소 0.1m ~ 최대 100.0m, 10% 반사율 기준 40.0m)
             "omni:sensor:Core:nearRangeM": (Sdf.ValueTypeNames.Float, 0.1),
             "omni:sensor:Core:farRangeM": (Sdf.ValueTypeNames.Float, 100.0),
             "omni:sensor:Core:minReflectionRangeM": (Sdf.ValueTypeNames.Float, 40.0),
             "omni:sensor:Core:minReflectance": (Sdf.ValueTypeNames.Float, 0.1),
-            "omni:sensor:Core:maxReturns": (Sdf.ValueTypeNames.Int, 1),
+            "omni:sensor:Core:maxReturns": (Sdf.ValueTypeNames.UInt, 1),
             "omni:sensor:Core:waveLengthNm": (Sdf.ValueTypeNames.Float, 905.0),
-            "omni:sensor:Core:pulseTimeNs": (Sdf.ValueTypeNames.Int, 6),
+            "omni:sensor:Core:validStartAzimuthDeg": (Sdf.ValueTypeNames.Float, 0.0),
+            "omni:sensor:Core:validEndAzimuthDeg": (Sdf.ValueTypeNames.Float, 360.0),
             # 측정 노이즈 및 정확도 (거리 오차 2cm, 방위각/고도각 편차 0.15 deg)
             "omni:sensor:Core:rangeAccuracyM": (Sdf.ValueTypeNames.Float, 0.02),
             "omni:sensor:Core:azimuthErrorStd": (Sdf.ValueTypeNames.Float, 0.15),
             "omni:sensor:Core:elevationErrorStd": (Sdf.ValueTypeNames.Float, 0.15),
-            "omni:sensor:Core:skipDroppingInvalidPoints": (Sdf.ValueTypeNames.Bool, True),
-            # 40채널 에미터 배열 설정 (-7.0 deg ~ +52.0 deg)
-            "omni:sensor:Core:emitterState:s001:elevationDeg": (Sdf.ValueTypeNames.FloatArray, elev_array),
+            # 허공(Sky) 미반사 레이저가 (0,0,0) 원점 더미 포인트로 찍히지 않도록 False 설정
+            "omni:sensor:Core:skipDroppingInvalidPoints": (Sdf.ValueTypeNames.Bool, False),
+            # Example_Rotary의 모든 128채널 배열(focalDistM, focalSlope 포함 총 10개)을 40채널로 동기화
+            # 주의: numLines=0인 Rotary 프로파일에서 bank는 반드시 빈 배열([])이어야 에러가 발생하지 않음
+            "omni:sensor:Core:emitterState:s001:elevationDeg": (Sdf.ValueTypeNames.FloatArray, elev_list),
             "omni:sensor:Core:emitterState:s001:azimuthDeg": (Sdf.ValueTypeNames.FloatArray, zeros_f),
-            "omni:sensor:Core:emitterState:s001:fireTimeNs": (Sdf.ValueTypeNames.IntArray, zeros_i),
+            "omni:sensor:Core:emitterState:s001:distanceCorrectionM": (Sdf.ValueTypeNames.FloatArray, zeros_f),
+            "omni:sensor:Core:emitterState:s001:focalDistM": (Sdf.ValueTypeNames.FloatArray, zeros_f),
+            "omni:sensor:Core:emitterState:s001:focalSlope": (Sdf.ValueTypeNames.FloatArray, zeros_f),
+            "omni:sensor:Core:emitterState:s001:fireTimeNs": (Sdf.ValueTypeNames.UIntArray, zeros_u),
             "omni:sensor:Core:emitterState:s001:channelId": (Sdf.ValueTypeNames.UIntArray, chan_ids),
-            "omni:sensor:Core:emitterState:s001:bank": (Sdf.ValueTypeNames.UIntArray, ones_u),
+            "omni:sensor:Core:emitterState:s001:bank": (Sdf.ValueTypeNames.UIntArray, []),
             "omni:sensor:Core:emitterState:s001:horOffsetM": (Sdf.ValueTypeNames.FloatArray, zeros_f),
             "omni:sensor:Core:emitterState:s001:vertOffsetM": (Sdf.ValueTypeNames.FloatArray, zeros_f),
             "omni:sensor:Core:emitterState:s001:reportRateDiv": (Sdf.ValueTypeNames.FloatArray, ones_f),
@@ -199,6 +210,14 @@ class Mid360s(GraphicalSensor):
             attr = prim.GetAttribute(attr_name)
             if not attr.IsValid():
                 attr = prim.CreateAttribute(attr_name, sdf_type)
+            target_type = attr.GetTypeName()
+            if isinstance(val, list):
+                if target_type == Sdf.ValueTypeNames.FloatArray:
+                    val = Vt.FloatArray([float(x) for x in val])
+                elif target_type == Sdf.ValueTypeNames.UIntArray:
+                    val = Vt.UIntArray([int(x) for x in val])
+                elif target_type == Sdf.ValueTypeNames.IntArray:
+                    val = Vt.IntArray([int(x) for x in val])
             attr.Set(val)
 
     def initialize(self, vehicle):

@@ -18,10 +18,40 @@ ZAV Drone Simulation on Lightweight Ground Plane with PX4 SITL & Pegasus
 ================================================================================
 """
 
+import os
+import sys
+
+# Isaac Sim 내장 ROS 2 Bridge (humble) 구동에 필요한 환경변수 및 DLL 경로 자동 설정
+os.environ.setdefault("ROS_DISTRO", "humble")
+os.environ.setdefault("RMW_IMPLEMENTATION", "rmw_fastrtps_cpp")
+# Windows-WSL2 간 대용량 PointCloud2 패킷 유실("A message was lost!!!") 방지를 위한 UDPv4 전용 FastDDS 프로파일 등록
+_fastdds_xml = os.path.abspath(
+    os.path.join(
+        os.path.dirname(__file__),
+        "..",
+        "extensions",
+        "pegasus.simulator",
+        "pegasus",
+        "simulator",
+        "logic",
+        "graphical_sensors",
+        "fastdds_udp_only.xml",
+    )
+)
+if os.path.isfile(_fastdds_xml):
+    os.environ.setdefault("FASTRTPS_DEFAULT_PROFILES_FILE", _fastdds_xml)
+
+if sys.platform == "win32":
+    _isaac_path = os.environ.get("ISAAC_PATH", "")
+    if _isaac_path:
+        _ros2_lib = os.path.normpath(os.path.join(_isaac_path, "exts", "isaacsim.ros2.bridge", os.environ["ROS_DISTRO"], "lib"))
+        if os.path.isdir(_ros2_lib) and _ros2_lib not in os.environ.get("PATH", ""):
+            os.environ["PATH"] = os.environ.get("PATH", "") + ";" + _ros2_lib
+
 from isaacsim import SimulationApp
 
-# Isaac Sim GUI 앱 인스턴스 초기화 (단독 실행 모드)
-simulation_app = SimulationApp({"headless": False})
+# Isaac Sim GUI 앱 인스턴스 초기화 (단독 실행 모드, RTX Lidar용 MotionBVH 활성화)
+simulation_app = SimulationApp({"headless": False, "enable_motion_bvh": True})
 
 import carb.input
 import omni.appwindow
