@@ -102,11 +102,27 @@ if [ -d "$PEGASUS_DIR" ]; then
     ASSET_DIR="$SIM_ROOT/assets/Robots/ZAV_v1"
     EXAMPLE_DIR="$PEGASUS_DIR/examples"
 
-    mkdir -p "$VEHICLE_DIR" "$ASSET_DIR" "$EXAMPLE_DIR"
+    GRAPH_SENSORS_DIR="$SIM_ROOT/logic/graphical_sensors"
+    GRAPH_SENSORS_INIT="$GRAPH_SENSORS_DIR/__init__.py"
+    mkdir -p "$VEHICLE_DIR" "$GRAPH_SENSORS_DIR" "$ASSET_DIR" "$EXAMPLE_DIR"
     cp "$SCRIPT_DIR/pegasus/zav_v1.py" "$VEHICLE_DIR/"
+    cp "$SCRIPT_DIR/pegasus/mid360s.py" "$GRAPH_SENSORS_DIR/"
     cp "$SCRIPT_DIR/pegasus/assets/ZAV_v1/ZAV_v1.usd" "$ASSET_DIR/"
     cp "$SCRIPT_DIR/pegasus/zav_sim.py" "$EXAMPLE_DIR/"
-    echo -e "  - zav_v1.py (공력 모델), ZAV_v1.usd (3D 모델), zav_sim.py 복사 완료"
+    echo -e "  - zav_v1.py (기체), mid360s.py (3D 라이다), ZAV_v1.usd (3D 모델), zav_sim.py 복사 완료"
+
+    # (A-0) graphical_sensors/__init__.py 에 Mid360s 및 Lidar 등록
+    if [ -f "$GRAPH_SENSORS_INIT" ]; then
+        if ! grep -q "Mid360s" "$GRAPH_SENSORS_INIT"; then
+            if ! grep -q "from .lidar import Lidar" "$GRAPH_SENSORS_INIT"; then
+                echo "from .lidar import Lidar" >> "$GRAPH_SENSORS_INIT"
+            fi
+            echo "from .mid360s import Mid360s" >> "$GRAPH_SENSORS_INIT"
+            echo -e "  - graphical_sensors/__init__.py 에 Mid360s 라이다 클래스 등록 완료"
+        else
+            echo -e "  - graphical_sensors/__init__.py 에 Mid360s가 이미 등록되어 있습니다."
+        fi
+    fi
 
     # (A) multirotors/__init__.py 에 ZAV_v1 클래스 등록
     if [ ! -f "$MULTIROTORS_INIT" ]; then
